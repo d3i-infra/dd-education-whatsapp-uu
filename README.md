@@ -1,3 +1,5 @@
+This Feldspar application is each year used in a Sociology course at Utrecht University on novel data collection methods. It contains a a WhatsApp data donation study for account information, and group chat information. Only non-personal data are collected in this application.
+
 # The data donation task
 
 The data donation task (a fork of [Feldspar](https://github.com/eyra/feldspar)) is front end that guides participants through the data donation steps, used in conjunction with Next.

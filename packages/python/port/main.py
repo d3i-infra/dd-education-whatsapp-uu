@@ -1,6 +1,11 @@
 from collections.abc import Generator
-from port.platforms.whatsapp_account_info import process
 from port.api.commands import CommandSystemExit
+
+from port.d3i_example_script import process # Comment this line
+
+# Uncomment one of these lines for a specific flow
+# from port.platforms.whatsapp_account_info import process
+# from port.platforms.whatsapp import process
 
 
 class ScriptWrapper(Generator):
