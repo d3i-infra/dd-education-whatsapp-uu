@@ -26,7 +26,6 @@ export const Confirm = (props: Props): JSX.Element => {
       <BodyLarge text={text} margin='mb-4' />
       <div className='flex flex-row gap-4'>
         <PrimaryButton label={ok} onClick={handleOk} color='text-grey1 bg-tertiary' />
-        <PrimaryButton label={cancel} onClick={handleCancel} color='text-white bg-primary' />
       </div>
     </>
   )

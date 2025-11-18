@@ -1,5 +1,5 @@
 from collections.abc import Generator
-from port.d3i_example_script import process
+from port.platforms.whatsapp_account_info import process
 from port.api.commands import CommandSystemExit
 
 

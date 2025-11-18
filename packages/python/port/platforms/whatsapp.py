@@ -20,6 +20,7 @@ import pandas as pd
 import port.api.props as props
 import port.api.d3i_props as d3i_props
 import port.helpers.validate as validate
+import port.helpers.port_helpers as ph
 from port.platforms.flow_builder import FlowBuilder
 from port.helpers.emoji_pattern import EMOJI_PATTERN
 
@@ -98,6 +99,15 @@ def generate_regexes(simplified_regexes):
 
 
 REGEXES =  generate_regexes(SIMPLIFIED_REGEXES)
+
+
+def anonymize_users(df: pd.DataFrame, list_with_users: list[str], user_name: str) -> pd.DataFrame:
+    users_not_you = list(set(list_with_users) - set([user_name]))
+    mapping = {user_name : f"Member {i+2}" for i, user_name in enumerate(users_not_you)}
+    mapping[user_name] = "Member 1"
+
+    df['name'] = df['name'].replace(mapping)
+    return df
 
 
 def remove_unwanted_characters(s: str) -> str:
@@ -245,6 +255,7 @@ def read_chat_file(path_to_chat_file: str) -> list[str]:
             lines = f.readlines()
 
     out = [remove_unwanted_characters(line) for line in lines]
+    out.pop(0) # remove first element containing system message
 
     return out
 
@@ -260,6 +271,7 @@ def parse_chat(path_to_chat: str) -> pd.DataFrame:
     try:
         lines = read_chat_file(path_to_chat)
         regex = determine_regex_from_chat(lines)
+        lines.pop(0) # pop first line
 
         current_line = lines.pop(0)
         next_line = lines.pop(0)
@@ -358,6 +370,10 @@ def total_number_of_words(df: pd.DataFrame, name: str) -> int:
     return total_number_of_words
 
 
+def redact_non_whitespace(text: str) -> str:
+    return ''.join('*' if not ch.isspace() else ch for ch in text)
+
+
 def favorite_emoji(df: pd.DataFrame, name: str) -> str:
     messages = df[df["name"] == name]["chat_message"]
     emojis = []
@@ -385,6 +401,7 @@ def user_statistics_to_df(df, user):
 
 
 def extraction(df: pd.DataFrame) -> list[d3i_props.PropsUIPromptConsentFormTableViz]:
+    df["chat_message"] = df["chat_message"].apply(redact_non_whitespace)
     tables = [
         d3i_props.PropsUIPromptConsentFormTableViz(
             id="whatsapp_grou_chat",
@@ -398,27 +415,6 @@ def extraction(df: pd.DataFrame) -> list[d3i_props.PropsUIPromptConsentFormTable
                 "nl": "The contents of your group chat. Try searching for stuff in your group chat, the figures should change accordingly! Timestamps (and therefore some tables) can be incorrect as it assumes the European format."
             }),
             visualizations=[
-                {
-                    "title": {
-                        "en": "Most common words in your chats", 
-                        "nl": "Most common words in your chats"
-                    },
-                    "type": "wordcloud",
-                    "textColumn": "Message",
-                    "tokenize": True
-                },
-                {
-                    "title": {
-                        "en": "Total chats per month of the year",
-                        "nl": "Total chats per month of the year"
-                    },
-                    "type": "area",
-                    "group": {
-                        "column": "Timestamp",
-                        "dateFormat": "month"
-                    },
-                    "values": [{}]
-                },
                 {
                     "title": {
                         "en": "Total chats per hour of the day",
@@ -468,13 +464,138 @@ def extraction(df: pd.DataFrame) -> list[d3i_props.PropsUIPromptConsentFormTable
     return [table for table in tables if not table.data_frame.empty]
 
 
+
+#                df = whatsapp.remove_empty_chats(df)
+#                users = whatsapp.extract_users(df)
+#                df = whatsapp.keep_users(df, users)
+#
+#                if len(users) < 3:
+#                    retry_result = yield render_page(RETRY_HEADER_WHATSAPP, retry_confirmation(platform_name))
+#                    if retry_result.__type__ == "PayloadTrue":
+#                        continue
+#                    else:
+#                        break
+#
+#                if selected_username == "":
+#                    selection = yield prompt_radio_menu(platform_name, users)
+#                    # If user skips during this process, selectedUsername remains equal to ""
+#                    if selection.__type__ == "PayloadString":
+#                        selected_username = selection.value
+#                    else:
+#                        break
+#                    
+#                    df = whatsapp.anonymize_users(df, users, selected_username)
+#                    anonymized_users_list = [ f"Member {i + 1}" for i in range(len(users))]
+#                    for user_name in anonymized_users_list:
+#                        statistics_table = whatsapp.deelnemer_statistics_to_df(df, user_name)
+#                        if statistics_table != None:
+#                            list_with_consent_form_tables.append(statistics_table)
+#
+#                    break
+#
+
+
+def deelnemer_statistics_to_df(df: pd.DataFrame, user_name: str) -> None | d3i_props.PropsUIPromptConsentFormTableViz:
+    out = None
+
+    try: 
+        df["op_mij"] = df["name"].shift(-1)
+        df["jij_op_wie"] = df["name"].shift(1)
+        df["n_words"] = df["chat_message"].apply(lambda x: len(x.split()))
+
+        # take into account self replies
+        def ignore_self_reply(a, b):
+            if a == b:
+                return None
+            else:
+                return b
+
+        df["op_mij"] = df[["name", "op_mij"]].apply(lambda x: ignore_self_reply(*x), axis=1)
+        df["jij_op_wie"] = df[["name", "jij_op_wie"]].apply(lambda x: ignore_self_reply(*x), axis=1)
+
+        df = df.drop(df[df.name != user_name].index) # pyright: ignore
+        df = df.reset_index(drop=True)
+
+        group_df = df.groupby("name").agg(
+            {
+                "date": ["count", "min", "max"],
+                "op_mij": [ lambda x: x.value_counts().idxmax() ],
+                "jij_op_wie": [ lambda x: x.value_counts().idxmax() ],
+                "n_words": ["sum"]
+            }
+        ).reset_index(drop=True)
+
+        group_df.columns = [
+            "Number of messages", 
+            "Date of first message",
+            "Date of last message",
+            "Who responds to you the most?",
+            "Who do you respond to the most?",
+            "Number of words"
+        ]
+
+        group_df = group_df[[
+            "Number of words",
+            "Number of messages", 
+            "Date of first message",
+            "Date of last message",
+            "Who responds to you the most?",
+            "Who do you respond to the most?"
+        ]]
+
+        df_out = pd.melt(
+            group_df, # pyright: ignore
+            var_name="Description",
+            value_name="Value"
+        )
+
+        if user_name == "Member 1":
+            title = "This is you (Member 1)"
+            table_title = props.Translatable({ "en": title, "nl": title })
+            description = props.Translatable({ 
+                "en": """In this table you’ll see anonymized data of each member in the Whatsapp group chat, including the total number of messages you’ve sent, the dates of your first and last messages, who responds to you the most, who you respond to the most, and the total number of words you’ve used.""",    
+                "nl": """In deze tabel zie je geanonimiseerde gegevens van elk lid in de Whatsapp-groepschat, waaronder het totale aantal berichten dat je hebt verstuurd, de data van je eerste en laatste bericht, wie het meest op jou reageert, op wie jij het meest reageert, en het totale aantal woorden dat je hebt gebruikt."""
+            })
+            out = d3i_props.PropsUIPromptConsentFormTableViz(f"table_id_{user_name.replace(' ', '_')}", table_title, df_out, description)
+        else:
+            title = user_name
+            table_title = props.Translatable({ "en": title, "nl": title })
+            out = d3i_props.PropsUIPromptConsentFormTableViz(f"table_id_{user_name.replace(' ', '_')}", table_title, df_out)
+
+        return out
+
+    except Exception as e:
+        logger.error(e)
+
+    finally:
+        return out
+
+
+
+
+def anonymize_users(df: pd.DataFrame, list_with_users: list[str], user_name: str) -> pd.DataFrame:
+    """
+    Extracts unique usersnames from chat dataframe
+    """
+
+    users_not_you = list(set(list_with_users) - set([user_name]))
+    mapping = {user_name : f"Member {i+2}" for i, user_name in enumerate(users_not_you)}
+    mapping[user_name] = "Member 1"
+
+    df['name'] = df['name'].replace(mapping)
+    return df
+
+
+
 class WhatsAppFlow(FlowBuilder):
     def __init__(self, session_id: int):
         super().__init__(session_id, "WhatsApp Group Chat")
         
     def validate_file(self, file):
         df = parse_chat(file)
-        if not df.empty:
+        df = remove_empty_chats(df)
+        users = extract_users(df)
+        if not df.empty and len(users) > 3:
             return validate.BaseValidation(status_code=0)
         else:
             return validate.BaseValidation(status_code=1)
@@ -484,6 +605,18 @@ class WhatsAppFlow(FlowBuilder):
         df = remove_empty_chats(df)
         users = extract_users(df)
         df = keep_users(df, users)
+
+        title = props.Translatable({
+            "en": "Select your WhatsApp name",
+            "nl": "Kies jouw WhatsApp naam"
+        })
+
+        empty_text = props.Translatable({ "en": "", "nl": "" })
+        radio_prompt = ph.generate_radio_prompt(title, empty_text, users)
+        selection = yield ph.render_page(empty_text, radio_prompt)
+        selected_user = selection.value
+        df = anonymize_users(df, users, selected_user)
+
         return extraction(df)
 
 
