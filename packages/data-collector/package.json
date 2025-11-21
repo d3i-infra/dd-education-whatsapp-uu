@@ -20,7 +20,7 @@
     "autoprefixer": "^10.4.21",
     "eslint": "^9.0.0",
     "eslint-plugin-react-hooks": "^5.0.0",
-    "eslint-plugin-react-refresh": "^0.4.12",
+    "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.0.0",
     "postcss": "^8.5.4",
     "react-highlight-words": "^0.21.0",
