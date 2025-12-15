@@ -98,8 +98,8 @@ importers:
         specifier: ^7.3.0
         version: 7.3.0(@types/node@25.0.2)(jiti@1.21.7)(terser@5.44.0)(yaml@2.8.1)
       zod:
-        specifier: ^4.1.13
-        version: 4.1.13
+        specifier: ^4.2.0
+        version: 4.2.0
 
   packages/feldspar:
     dependencies:
@@ -1952,8 +1952,8 @@ packages:
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
 
-  zod@4.1.13:
-    resolution: {integrity: sha512-AvvthqfqrAhNH9dnfmrfKzX5upOdjUVJYFqNSlkmGf64gRaTzlPwz99IHYnVs28qYAybvAlBV+H7pn0saFY4Ig==}
+  zod@4.2.0:
+    resolution: {integrity: sha512-Bd5fw9wlIhtqCCxotZgdTOMwGm1a0u75wARVEY9HMs1X17trvA/lMi4+MGK5EUfYkXVTbX8UDiDKW4OgzHVUZw==}
 
 snapshots:
 
@@ -2813,8 +2813,8 @@ snapshots:
       '@babel/parser': 7.28.5
       eslint: 9.39.1(jiti@1.21.7)
       hermes-parser: 0.25.1
-      zod: 4.1.13
-      zod-validation-error: 4.0.2(zod@4.1.13)
+      zod: 4.2.0
+      zod-validation-error: 4.0.2(zod@4.2.0)
     transitivePeerDependencies:
       - supports-color
 
@@ -3624,8 +3624,8 @@ snapshots:
 
   yocto-queue@0.1.0: {}
 
-  zod-validation-error@4.0.2(zod@4.1.13):
+  zod-validation-error@4.0.2(zod@4.2.0):
     dependencies:
-      zod: 4.1.13
+      zod: 4.2.0
 
-  zod@4.1.13: {}
+  zod@4.2.0: {}
