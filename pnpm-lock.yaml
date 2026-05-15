@@ -145,7 +145,7 @@ importers:
         version: 10.5.0(postcss@8.5.14)
       fdir:
         specifier: 6.5.0
-        version: 6.5.0(picomatch@4.0.3)
+        version: 6.5.0(picomatch@4.0.4)
       postcss:
         specifier: ^8.5.14
         version: 8.5.14
