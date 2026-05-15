@@ -846,6 +846,9 @@ packages:
   '@types/estree@1.0.8':
     resolution: {integrity: sha512-dWHzHa2WqEXI/O1E9OjrocMTKJl2mSrEolh1Iomrv6U+JuNwaHXsXx9bLu5gG7BUWFIN0skIQJQ/L1rIex4X6w==}
 
+  '@types/estree@1.0.9':
+    resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
+
   '@types/fs-extra@8.1.5':
     resolution: {integrity: sha512-0dzKcwO+S8s2kuF5Z9oUWatQJj5Uq/iqphEtE3GQJVRRYm/tD1LglU2UnXi2A8jLq5umkGouOXOR9y0n613ZwQ==}
 
@@ -2527,7 +2530,7 @@ snapshots:
 
   '@rollup/pluginutils@5.3.0(rollup@4.60.3)':
     dependencies:
-      '@types/estree': 1.0.8
+      '@types/estree': 1.0.9
       estree-walker: 2.0.2
       picomatch: 4.0.4
     optionalDependencies:
@@ -2644,6 +2647,8 @@ snapshots:
   '@types/esrecurse@4.3.1': {}
 
   '@types/estree@1.0.8': {}
+
+  '@types/estree@1.0.9': {}
 
   '@types/fs-extra@8.1.5':
     dependencies:
@@ -3026,7 +3031,7 @@ snapshots:
   eslint-scope@9.1.2:
     dependencies:
       '@types/esrecurse': 4.3.1
-      '@types/estree': 1.0.8
+      '@types/estree': 1.0.9
       esrecurse: 4.3.0
       estraverse: 5.3.0
 
@@ -3045,7 +3050,7 @@ snapshots:
       '@humanfs/node': 0.16.8
       '@humanwhocodes/module-importer': 1.0.1
       '@humanwhocodes/retry': 0.4.3
-      '@types/estree': 1.0.8
+      '@types/estree': 1.0.9
       ajv: 6.15.0
       cross-spawn: 7.0.6
       debug: 4.4.3(supports-color@5.5.0)
@@ -3262,7 +3267,7 @@ snapshots:
 
   is-reference@1.2.1:
     dependencies:
-      '@types/estree': 1.0.8
+      '@types/estree': 1.0.9
 
   isexe@2.0.0: {}
 
