@@ -24,7 +24,7 @@ priority: default
 - `script.py`'s only dispatch dependency is `module.process(session_id)`: it calls `validate_or_raise(platform)`, imports `port.platforms.<platform>`, and calls `process()`. No platform names, no `PLATFORM_REGISTRY`.
 - Platform-authoring convention (used inside the module, not by the dispatcher): each exposes `EXTRACTOR_REGISTRY` (ordered `dict[str, Callable[..., pd.DataFrame]]`), `extraction(...)`, a `<Platform>Flow(FlowBuilder)` subclass, and `process(session_id)` returning `<Platform>Flow(session_id).start_flow()`. `example.py` is the canonical template.
 - A runnable/released platform needs a generated `configs/<platform>_config.json`, but those are generated on demand (the config lifecycle and overwrite policy are their own record) and validated at runtime by `script.py`; only `example_config.json` is committed. Adding a platform still requires no change to `script.py`.
-- Documented signature exceptions, both still exposing all four convention symbols: **Netflix** keeps `run_extraction` but with a different `extraction(reader, selected_user)` shape; **WhatsApp** has an `extraction(df)` shape and still calls `load_port_config`, but *bypasses* `run_extraction`, building its tables in its own loop.
+- Documented signature exceptions, all still exposing all four convention symbols: **Netflix** keeps `run_extraction` but with a different `extraction(reader, selected_user)` shape; **WhatsApp** has an `extraction(df)` shape and still calls `load_port_config`, but *bypasses* `run_extraction`, building its tables in its own loop. **whatsapp_group_chat_uu** has an `extraction(df)` shape and does run `run_extraction`, with the pre-parsed chat DataFrame standing in for the reader (its extractors take `(df, errors)`).
 
 ## Why
 
@@ -32,5 +32,5 @@ priority: default
 
 ## Checks
 
-- Confirm each *platform* module under `port/platforms/` (excluding `__init__.py` and any non-platform support files) exposes `EXTRACTOR_REGISTRY`, `extraction`, a `<Platform>Flow(FlowBuilder)` subclass, and `process`; allowlist Netflix/WhatsApp for signature divergence only.
+- Confirm each *platform* module under `port/platforms/` (excluding `__init__.py` and any non-platform support files) exposes `EXTRACTOR_REGISTRY`, `extraction`, a `<Platform>Flow(FlowBuilder)` subclass, and `process`; allowlist Netflix/WhatsApp/whatsapp_group_chat_uu for signature divergence only.
 - Confirm `script.py` dispatches only via `validate_or_raise` + `import_module("port.platforms.<platform>")` + `process()`, with no per-platform names or `PLATFORM_REGISTRY`.
