@@ -12,7 +12,14 @@ import zipfile
 
 import logging
 
+from port.api.file_utils import SeekableBinaryReader
+
 logger = logging.getLogger(__name__)
+
+# Non-propagating logger for zip content enumeration (defense in depth).
+content_logger = logging.getLogger(f"{__name__}.content")
+content_logger.propagate = False
+content_logger.addHandler(logging.NullHandler())
 
 
 class Language(Enum):
@@ -116,6 +123,10 @@ class ValidateInput:
     current_status_code: StatusCode | None = None
     current_ddp_category: DDPCategory | None = None
 
+    # Full zip member paths cached during validation. Internal only —
+    # must not appear in logs, host milestones, or donation payloads.
+    archive_members: list[str] = field(default_factory=list, repr=False)
+
     ddp_categories_lookup: dict[str, DDPCategory] = field(init=False)
     status_codes_lookup: dict[int, StatusCode] = field(init=False)
 
@@ -193,35 +204,36 @@ class ValidateInput:
         }
 
 
-def validate_zip(ddp_categories: list[DDPCategory], path_to_zip: str) -> ValidateInput:
+def validate_zip(
+    ddp_categories: list[DDPCategory],
+    archive: SeekableBinaryReader,
+) -> ValidateInput:
     """
-    Validates a DDP zip file against a list of DDP categories.
+    Validates a DDP zip archive against a list of DDP categories.
 
-    This function attempts to open and read the contents of a zip file, then uses
-    the ValidateInput class to infer the DDP category based on the files in the zip.
-    If the zip file is invalid or cannot be read, it sets an error status code (an integer greather than 0).
+    This function attempts to open and read the contents of a zip archive,
+    then uses the ValidateInput class to infer the DDP category based on the
+    files in the zip. If the archive is invalid or cannot be read, it sets
+    an error status code (an integer greater than 0).
 
     Args:
-        ddp_categories (List[DDPCategory]): A list of valid DDP categories to compare against.
-        path_to_zip (str): The file path to the zip file to be validated.
+        ddp_categories (List[DDPCategory]): A list of valid DDP categories
+            to compare against.
+        archive: A seekable binary file-like object — typically an
+            `AsyncFileAdapter` from a browser upload, or an `io.BytesIO`
+            in tests. Per ADR-0026, the upload pipeline never
+            materializes uploads to a path; consumers accept the file-like
+            adapter directly to avoid `FileReaderSync`'s ~2 GiB cap.
 
     Returns:
-        ValidateInput: An instance of ValidateInput containing the validation results.
+        ValidateInput: An instance of ValidateInput containing the
+            validation results.
 
     Raises:
-        zipfile.BadZipFile: This exception is caught internally and results in an error status code.
-
-    Examples:
-        >>> categories = [DDPCategory(id="cat1", ddp_filetype=DDPFiletype.JSON, language=Language.EN, known_files=["file1.txt", "file2.txt"])]
-        >>> result = validate_zip(categories, "path/to/valid.zip")
-        >>> result.get_status_code_id()
-        0
-
-        >>> result = validate_zip(categories, "path/to/invalid.zip")
-        >>> result.get_status_code_id()
-        1
+        zipfile.BadZipFile: This exception is caught internally and results
+            in an error status code.
     """
-    
+
     status_codes = [
         StatusCode(id=0, description="Detected a zip from the DDPCategory list"),
         StatusCode(id=1, description="Undetected zip or bad zipfile"),
@@ -230,11 +242,13 @@ def validate_zip(ddp_categories: list[DDPCategory], path_to_zip: str) -> Validat
 
     try:
         paths = []
-        with zipfile.ZipFile(path_to_zip, "r") as zf:
-            for f in zf.namelist():
+        with zipfile.ZipFile(archive, "r") as zf:
+            all_members = zf.namelist()
+            for f in all_members:
                 p = Path(f)
-                logger.debug("Found: %s in zip", p.name)
+                content_logger.debug("Found: %s in zip", p.name)
                 paths.append(p.name)
+            validate.archive_members = all_members
 
         validate.infer_ddp_category(paths)
     except zipfile.BadZipFile:

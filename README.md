@@ -1,56 +1,233 @@
-This Feldspar application is each year used in a Sociology course at Utrecht University on novel data collection methods. It contains a a WhatsApp data donation study for account information, and group chat information. Only non-personal data are collected in this application.
+# WhatsApp data donation — Utrecht University course
+
+This Feldspar application is used each year in a Sociology course at Utrecht University on novel data collection methods. It contains a WhatsApp data donation study for account information and for group chat information. Only non-personal data are collected in this application.
+
+> **Adapted to 2026:** this repository was brought up to date in November 2026 with the latest `development` branch of [d3i-infra/data-donation-task](https://github.com/d3i-infra/data-donation-task). The course flows now live as two separate platforms that follow that repository's architecture decisions (`docs/decisions/`).
+
+## The two UU platforms
+
+| Platform (`VITE_PLATFORM`) | Upload | Donates |
+|---|---|---|
+| `whatsapp_account_info` | WhatsApp "Request account info" zip | number of contacts, number of groups, device platform (iphone/android) |
+| `whatsapp_group_chat_uu` | WhatsApp group-chat export (zip) | anonymised chat (Member 1 = you) with redacted message text, emoji counts, per-member statistics; requires more than three members |
+
+Run one locally:
+
+```sh
+VITE_PLATFORM=whatsapp_group_chat_uu pnpm start
+```
+
+Build the deployable zips (one per platform config in `packages/python/port/configs/`; this includes upstream's `example` config alongside the two UU configs):
+
+```sh
+pnpm release
+```
+
+Or build only one UU platform:
+
+```sh
+VITE_PLATFORM=whatsapp_account_info pnpm release
+VITE_PLATFORM=whatsapp_group_chat_uu pnpm release
+```
+
+---
 
 # The data donation task
 
-The data donation task (a fork of [Feldspar](https://github.com/eyra/feldspar)) is front end that guides participants through the data donation steps, used in conjunction with Next.
+The data donation task (a fork of [Feldspar](https://github.com/eyra/feldspar)) is a front end that guides participants through the data donation steps, used in conjunction with Next.
 Next is a software as a service platform developed by [Eyra](https://eyra.co/) to facilitate scientific research.
 
-## Documentation
+For detailed tutorials and API reference, see the [documentation site](https://d3i-infra.github.io/data-donation-task/).
 
-Here you can find the [documentation](https://d3i-infra.github.io/data-donation-task/) of this repository and tutorial articles to get you going.
+### What's new in v3.0.0
 
+Platform extraction is now config-driven: each platform has a `configs/<platform>_config.json` that declares table titles, column headers, and visualizations. Generate one with `pnpm generate-config <platform>`. The generator refuses to overwrite existing files, protecting researcher edits. `release.sh` auto-discovers platforms from `configs/` — no hardcoded list needed. `VITE_PLATFORM` is now required in dev mode.
 
-## Installation of the data donation task
+See [CHANGELOG.md](CHANGELOG.md) for the full list of changes and the migration notes for downstream forks.
 
-In order to start a local instance of the data donation task go through the following steps:
+## Installation and local testing
 
-0. Pre-requisites
+### Pre-requisites
 
-   - Fork or clone this repo
-   - Install [Node.js](https://nodejs.org/en)
-   - Install [pnpm](https://pnpm.io/installation)
-   - Install [Python](https://www.python.org/) (Version 3.11 or higher)
-   - Install [Poetry](https://python-poetry.org/)
+- Fork or clone this repo
+- Install [Node.js](https://nodejs.org/en)
+- Install [pnpm](https://pnpm.io/)
+- Install [Python](https://www.python.org/)
+- Install [Poetry](https://python-poetry.org/)
 
-1. Install dependencies:
+### Setup
 
-   ```sh
-   pnpm install
-   ```
+```sh
+pnpm install
+cd packages/python && poetry install
+```
 
-2. Run the project locally with hot reloading (builds Python package and starts the development server):
+### Check environment
 
-   ```sh
-   pnpm run start
-   ```
+```sh
+pnpm doctor
+```
 
-3. You can now go to the browser: [`http://localhost:3000`](http://localhost:3000).
+### Start local dev server
 
-If the installation went correctly you should be greeted with a mock data donation study. 
-For detailed installation instructions see the [documentation](https://d3i-infra.github.io/data-donation-task/).
+```sh
+VITE_PLATFORM=example pnpm start
+```
 
+Visit [`http://localhost:3000`](http://localhost:3000).
 
-## Contributing
+### Dev-mode notes
 
-We want to make contributing to this project as easy and transparent as possible, whether it's:
+A successful donation in dev mode does **not** navigate anywhere — that's
+expected, not a hang. The flow exhausts, exits `0`, and the console prints
+`[FakeBridge] received exit: 0=` and stays put. Navigating on completion is
+the host's job in production (Next); `FakeBridge` only logs the exit, since
+there is no host to hand off to locally.
 
-- Reporting a bug
-- Discussing the current state of the code
-- Submitting a fix
-- Proposing new features
+The dev server also accepts the donation POST itself: `vite.config.ts`
+registers a dev-only middleware (`devDonateSinkPlugin`, active only under
+`pnpm start`, never in a production build) on `POST /data-submission` that
+returns `200` and logs `[dev-donate-sink] POST /data-submission key=... bytes=...`
+— without it, a bare `pnpm start` run 404s at the donate step, since Vite's
+dev server has no such route by default. Playwright specs never touch this
+sink; each one stubs `/data-submission` itself before driving the flow.
 
-If you have any questions, find any bugs, or have any ideas, read how to contribute [here](https://github.com/eyra/port/blob/master/CONTRIBUTING.md).
+## Commands
 
+### Development
+
+| Command | Description |
+|---|---|
+| `VITE_PLATFORM=<platform> pnpm start` | Start dev server with hot reload |
+| `pnpm generate-config <platform>` | Generate `configs/<platform>_config.json` from extractor docstrings |
+| `pnpm run build` | Full production build (Python wheel + feldspar + data-collector) |
+| `pnpm doctor` | Check environment setup (13 checks) |
+
+### Testing & Type Checking
+
+| Command | Description |
+|---|---|
+| `pnpm test` | Run the full suite (JS unit tests, then Python) |
+| `pnpm test:js` | Run the JS unit tests (`@eyra/feldspar` + `@eyra/data-collector`) |
+| `pnpm test:py` | Run the Python tests |
+| `pnpm test:py -- tests/test_specific.py -q` | Run specific Python tests |
+| `pnpm typecheck:py` | Run Pyright type checker |
+| `pnpm verify:py` | Run both tests + type checks |
+| `pnpm test:e2e` | Run the Playwright end-to-end suite |
+
+### Releases
+
+| Command | Description |
+|---|---|
+| `pnpm release` | Build one zip per platform (auto-discovered from `configs/`) |
+| `VITE_PLATFORM=<platform> pnpm release` | Build a release zip for a single platform |
+
+Releases are created in `releases/`.
+
+## Working with platforms
+
+Generate a config for a platform, then edit it to suit your study:
+
+```sh
+pnpm generate-config instagram
+# edit packages/python/port/configs/instagram_config.json
+```
+
+To add a new platform, copy `packages/python/port/platforms/example.py` as your starting point.
+
+See the [documentation site](https://d3i-infra.github.io/data-donation-task/) for full tutorials.
+
+## Localization status
+
+The participant-facing UI is localized in two independent layers. They are
+translated by different people, cover different locales, and fall back
+separately — a page can render German chrome around English table titles.
+
+| UI locale | **Framework chrome**<br>buttons, consent prose, error pages<br>*(ships in this repo)* | **Study content**<br>table titles, column headers, viz titles<br>*(per platform, yours to write)* |
+|---|---|---|
+| `en` | complete — **the fallback** | **required**; validation fails without it |
+| `nl` | complete | shipped for the platforms in this repo |
+| `de` | ⚠️ **provisional** — machine-translated, pending native-speaker review | — falls back to English, live |
+| `it` | ⚠️ **provisional** — machine-translated, pending native-speaker review | — falls back to English, live |
+| `es` | ⚠️ **provisional** — machine-translated, pending native-speaker review | — falls back to English, live |
+
+**Fallback is per string, at render time.** A locale that a given text bundle
+does not carry resolves to `en` for that string only; there is no
+whole-page language switch and no build step involved. So a `de` participant
+sees translated chrome and English table titles until you translate the tables
+in `configs/<platform>_config.json`.
+
+Reviewing the provisional translations — register conventions and the specific
+judgment calls that need a native speaker's ruling — is documented in
+[`docs/localization-translation-notes.md`](docs/localization-translation-notes.md).
+
+Checking your own coverage: `pnpm generate-config <platform>` and `pnpm release`
+both run the config validator with `--report`, which prints a per-locale
+coverage matrix (provisional locales marked `*`) and fails the build if a text
+bundle is missing English.
+
+### UI locale is not `platform_info.languages`
+
+These are two unrelated things and are **never synced**:
+
+- The **UI locale** (`en`/`nl`/`de`/`it`/`es`) is what language the interface
+  renders in. It comes from the host at session start.
+- **`platform_info.languages`** in a platform config — and `Language` in
+  `port/helpers/validate.py` — describe the language of the *participant's DDP
+  export*, i.e. what language the filenames and headers inside their downloaded
+  zip are in. It is a parsing concern.
+
+A participant can perfectly well read the UI in Spanish while donating a
+Dutch-language Instagram export. Changing one must never change the other.
+
+### Setting the locale in development
+
+In production the locale comes only from the host's `live-init` message; there
+is no URL override. In **dev builds only**, a `?locale=` query parameter
+overrides it — this is the dev-server convenience and the Playwright e2e
+injection point:
+
+```
+http://localhost:3000/?locale=nl
+```
+
+The value is normalized once, at the host boundary, before anything sees it:
+
+| Requested | Rendered | Why |
+|---|---|---|
+| `nl` | `nl` | supported |
+| `es-ES`, `es_ES`, `ES` | `es` | region and case are stripped |
+| `ro` | `en` | not a supported UI locale → default |
+| *(absent)* | `en` | default |
+
+The supported set lives in
+`packages/data-collector/src/locale/ui_locales.json` (mirrored into the Python
+package; a test fails if the two drift). See ADR-0038.
+
+## Architecture
+
+See `docs/decisions/` for architectural decision records. Key structure:
+
+```
+packages/
+  python/         Python extraction scripts (per-platform)
+  feldspar/       Workflow UI framework (upstream Eyra)
+  data-collector/ Host app / dev server with custom UI components
+```
+
+### Platform extraction flow
+
+Each platform (Instagram, Facebook, YouTube, etc.) has a `FlowBuilder` subclass in `packages/python/port/platforms/` that handles:
+
+1. File prompt → participant uploads DDP zip
+2. Validation → DDP category detection via `DDP_CATEGORIES`
+3. Extraction → `ZipArchiveReader` reads files from cached archive inventory
+4. Consent → participant reviews extracted tables
+5. Donation → data sent to host platform
+
+### Supported platforms
+
+LinkedIn, Instagram, Facebook, YouTube, TikTok, Netflix, ChatGPT, WhatsApp, X, Chrome
 
 ## Citation
 

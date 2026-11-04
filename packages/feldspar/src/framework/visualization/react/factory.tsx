@@ -1,10 +1,8 @@
 import { PropsUIPage } from "../../types/pages";
 import { Payload } from "../../types/commands";
 import { PageFactory } from "./factories/base";
-import { EndPageFactory } from "./factories/end_page";
 import { DataSubmissionPageFactory } from "./factories/data_submission_page";
 import { JSX } from "react";
-import React from "react";
 
 export interface ReactFactoryContext {
   locale: string;
@@ -17,7 +15,6 @@ export default class ReactFactory {
   constructor(initialFactories: PageFactory[] = []) {
     this.factories = [
       ...initialFactories,
-      new EndPageFactory(),
       new DataSubmissionPageFactory(),
     ];
   }

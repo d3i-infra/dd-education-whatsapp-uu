@@ -5,13 +5,11 @@ import { PropsUIPromptFileInput, PropsUIPromptProgress, PropsUIPromptConfirm, Pr
 
 export type PropsUIPage =
   PropsUIPageSplashScreen |
-  PropsUIPageDataSubmission |
-  PropsUIPageEnd
+  PropsUIPageDataSubmission
 
 export function isPropsUIPage (arg: any): arg is PropsUIPage {
   return (
-    isPropsUIPageDataSubmission(arg) ||
-    isPropsUIPageEnd(arg)
+    isPropsUIPageDataSubmission(arg)
   )
 }
 
@@ -28,11 +26,4 @@ export interface PropsUIPageDataSubmission {
 }
 export function isPropsUIPageDataSubmission (arg: any): arg is PropsUIPageDataSubmission {
   return isInstanceOf<PropsUIPageDataSubmission>(arg, 'PropsUIPageDataSubmission', ['platform', 'header', 'body'])
-}
-
-export interface PropsUIPageEnd {
-  __type__: 'PropsUIPageEnd'
-}
-export function isPropsUIPageEnd (arg: any): arg is PropsUIPageEnd {
-  return isInstanceOf<PropsUIPageEnd>(arg, 'PropsUIPageEnd', [])
 }

@@ -1,30 +1,40 @@
 """
-DDP Whatsapp account info module
+WhatsApp Account Information (UU course)
+========================================
 
-This module contains functions to handle *.jons files contained within Whatsapp account info
+Handles the WhatsApp "Request account info" export (a zip of JSON/HTML files)
+used in the Utrecht University course on novel data collection methods. Only
+non-personal counts are extracted: the number of contacts, the number of
+groups, and whether WhatsApp runs on an iPhone or Android device.
+
+Platform info::
+
+    {
+        "name": "WhatsApp account information",
+        "filetypes": ["zip"],
+        "languages": ["en", "nl"],
+        "description": "Handles the WhatsApp account information export (zip with JSON/HTML files). Extracts the number of contacts, the number of groups and the device platform (iphone/android).",
+        "time_last_tested": "not yet implemented"
+    }
 """
-
-from pathlib import Path
 import logging
-import zipfile
+from collections import Counter
+from typing import Callable
 
 import pandas as pd
 
-import port.api.props as props
-import port.api.d3i_props as d3i_props
-import port.helpers.extraction_helpers as eh
 import port.helpers.validate as validate
-from port.platforms.flow_builder import FlowBuilder
-
-from port.helpers.validate import (
-    DDPCategory,
-    DDPFiletype,
-    Language,
-)
-
+from port.api.d3i_props import ExtractionResult
+from port.api.file_utils import SeekableBinaryReader
+from port.helpers.extraction_helpers import ZipArchiveReader
+from port.helpers.flow_builder import FlowBuilder
+from port.helpers.table_extractor import load_port_config, run_extraction
+from port.helpers.validate import DDPCategory, DDPFiletype, Language, ValidateInput
 
 logger = logging.getLogger(__name__)
 
+#: Config filename key and ADR-0020 donation-key segment.
+PLATFORM_KEY = "whatsapp_account_info"
 
 DDP_CATEGORIES = [
     DDPCategory(
@@ -46,94 +56,115 @@ DDP_CATEGORIES = [
             "account_settings.html",
             "account_settings.json",
             "terms_of_service.html",
-            "terms_of_service.json"
-         ],
+            "terms_of_service.json",
+        ],
     )
 ]
 
 
-def ncontacts_ngroups_device_to_df(whatsapp_account_info_zip: str) -> pd.DataFrame:
-    out = pd.DataFrame()
-    datapoints = []
-
-    # Extract number of contacts
-    b = eh.extract_file_from_zip(whatsapp_account_info_zip, "contacts.json")
-    d = eh.read_json_from_bytes(b)
-    try:
-        items = d["wa_contacts"]
-        datapoints.append(("Number of contacts", len(items)))
-    except Exception as e:
-        logger.error("Exception caught: %s", e)
-
-    # Extract number of groups
-    b = eh.extract_file_from_zip(whatsapp_account_info_zip, "groups.json")
-    d = eh.read_json_from_bytes(b)
-    try:
-        items = d["wa_groups"]
-        datapoints.append(("Number of groups", len(items)))
-    except Exception as e:
-        logger.error("Exception caught: %s", e)
-
-    # Extract platform 
-    b = eh.extract_file_from_zip(whatsapp_account_info_zip, "registration_information.json")
-    d = eh.read_json_from_bytes(b)
-    print(d)
-    try:
-        platform = d["wa_registration_info"].get("platform", "").lower()
-        description = "Platform name"
-        print(platform)
-        if "iphone" in platform:
-            datapoints.append((description, "iphone"))
-        elif "android" in platform:
-            datapoints.append((description, "android"))
-        else:
-            pass # dont append datapoint
-
-    except Exception as e:
-        logger.error("Exception caught: %s", e)
-
-    if len(datapoints) > 0:
-        out = pd.DataFrame(datapoints, columns=["Description", "Value"])
-
-    return out
+def _count_list(reader: ZipArchiveReader, errors: Counter, filename: str, key: str) -> int | None:
+    """Length of ``data[key]`` in *filename*; None when the file is absent
+    (expected, ADR-0024) or has an unexpected shape (counted in *errors*)."""
+    result = reader.json(filename)
+    if not result.found or not result.data:
+        return None  # absent (ADR-0024) or unreadable: the reader already recorded any decode error
+    items = result.data.get(key) if isinstance(result.data, dict) else None
+    if not isinstance(items, list):
+        errors[f"UnexpectedShape({filename})"] += 1
+        return None
+    return len(items)
 
 
-def extract(account_info_zip: str) -> list[props.PropsUIPromptConsentFormTable]:
+def _device_platform(reader: ZipArchiveReader, errors: Counter) -> str | None:
+    """``"iphone"`` / ``"android"`` from registration_information.json, else None."""
+    result = reader.json("registration_information.json")
+    if not result.found or not result.data:
+        return None  # absent (ADR-0024) or unreadable: the reader already recorded any decode error
+    info = result.data.get("wa_registration_info") if isinstance(result.data, dict) else None
+    if not isinstance(info, dict):
+        errors["UnexpectedShape(registration_information.json)"] += 1
+        return None
+    platform = str(info.get("platform", "")).lower()
+    if "iphone" in platform:
+        return "iphone"
+    if "android" in platform:
+        return "android"
+    return None
+
+
+def account_summary_to_df(reader: ZipArchiveReader, errors: Counter) -> pd.DataFrame:
+    """Summarise the account export as non-personal counts.
+
+    Table documentation::
+
+        {
+          "summary": "One row per available statistic about the participant's WhatsApp account: number of contacts, number of groups, and the device platform.",
+          "source_file": "contacts.json, groups.json, registration_information.json",
+          "columns": {
+            "Description": "Name of the statistic.",
+            "Value": "Value of the statistic (a count, or iphone/android for the platform)."
+          }
+        }
+
+    Table config::
+
+        {
+          "id": "whatsapp_account_info",
+          "title": {
+            "en": "WhatsApp account information",
+            "nl": "WhatsApp-accountinformatie"
+          },
+          "description": {
+            "en": "In this table you can see: the number of groups you are a part of, the number of contacts you have, and the platform you use WhatsApp on.",
+            "nl": "In deze tabel zie je: het aantal groepen waar je lid van bent, het aantal contacten dat je hebt, en het platform waarop je WhatsApp gebruikt."
+          },
+          "headers": {
+            "Description": {"en": "Description", "nl": "Beschrijving"},
+            "Value": {"en": "Value", "nl": "Waarde"}
+          }
+        }
     """
-    Main data extraction function
-    Assemble all extraction logic here
-    """
-    tables_to_render = []
-
-    # Extract comments
-    df = ncontacts_ngroups_device_to_df(account_info_zip)
-    if not df.empty:
-        table_title = props.Translatable({
-            "en": "Whatsapp Account information",
-            "nl": "Whatsapp Account information",
-        })
-        table_description = props.Translatable({
-            "en": "In this table you can see: the number of groups you are a part of, the number of contacts you have, and you use WhatsApp on", 
-            "nl": "In this table you can see: the number of groups you are a part of, the number of contacts you have, and you use WhatsApp on", 
-        })
-        table = d3i_props.PropsUIPromptConsentFormTableViz("all", table_title, df, table_description)
-        tables_to_render.append(table)
-
-    return tables_to_render
+    rows: list[tuple[str, object]] = []
+    n_contacts = _count_list(reader, errors, "contacts.json", "wa_contacts")
+    if n_contacts is not None:
+        rows.append(("Number of contacts", n_contacts))
+    n_groups = _count_list(reader, errors, "groups.json", "wa_groups")
+    if n_groups is not None:
+        rows.append(("Number of groups", n_groups))
+    device = _device_platform(reader, errors)
+    if device is not None:
+        rows.append(("Platform name", device))
+    return pd.DataFrame(rows, columns=["Description", "Value"])
 
 
-class WhatsAppAccountInfo(FlowBuilder):
-    def __init__(self, session_id: int):
-        super().__init__(session_id, "WhatsApp account information")
-        
-    def validate_file(self, file):
+EXTRACTOR_REGISTRY: dict[str, Callable[..., pd.DataFrame]] = {
+    "account_summary_to_df": account_summary_to_df,
+}
+
+
+def extraction(archive: SeekableBinaryReader, validation: ValidateInput) -> ExtractionResult:
+    config = load_port_config(EXTRACTOR_REGISTRY, PLATFORM_KEY)
+    errors: Counter = Counter()
+    reader = ZipArchiveReader(archive, validation.archive_members, errors)
+    return run_extraction(reader, errors, config)
+
+
+class WhatsAppAccountInfoFlow(FlowBuilder):
+    def __init__(self, session_id: str):
+        super().__init__(
+            session_id,
+            "WhatsApp account information",
+            config_key=PLATFORM_KEY,
+            donation_key=PLATFORM_KEY,
+        )
+
+    def validate_file(self, file: SeekableBinaryReader) -> ValidateInput:
         return validate.validate_zip(DDP_CATEGORIES, file)
-        
-    def extract_data(self, file_value, validation):
-        return extract(file_value)
+
+    def extract_data(self, file_value: SeekableBinaryReader, validation: ValidateInput) -> ExtractionResult:
+        return extraction(file_value, validation)
 
 
-def process(session_id):
-    flow = WhatsAppAccountInfo(session_id)
+def process(session_id: str):
+    flow = WhatsAppAccountInfoFlow(session_id)
     return flow.start_flow()
-

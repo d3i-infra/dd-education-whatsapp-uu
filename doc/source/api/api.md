@@ -27,3 +27,17 @@
 .. automodule:: port.helpers.validate
    :members:
 ```
+
+## FlowBuilder
+
+```{eval-rst}
+.. automodule:: port.helpers.flow_builder
+   :members:
+```
+
+## Upload safety
+
+```{eval-rst}
+.. automodule:: port.helpers.uploads
+   :members:
+```

@@ -1,17 +1,20 @@
-import { useCallback, useMemo, useState, useEffect, useRef } from "react"
-import { 
-    Translator,
+import { useCallback, useMemo, useState, useEffect, useRef, ReactElement } from "react"
+import {
     Title4,
 } from "@eyra/feldspar"
 import TextBundle from "@eyra/feldspar"
+import { resolveAll } from "../../locale/text"
 import { 
     TableWithContext,
-    PropsUITableRow,
 } from "./types"
 import { TableItems } from "./table_items"
 import { Figure } from "./visualization_plugin/figure"
 import { Table } from "./table"
 import { SearchBar } from "./search_bar"
+import { searchRows } from "./search_rows"
+import { buildCellDisplay } from "./cell_display"
+import { resolveDisplayTimezone } from "./visualization_plugin/visualizationDataFunctions/util"
+import { zTable, Table as ValidatedTable } from "./visualization_plugin/types"
 
 interface TableContainerProps {
   id: string
@@ -20,7 +23,7 @@ interface TableContainerProps {
   locale: string
 }
 
-export const TableContainer = ({ id, table, updateTable, locale }: TableContainerProps): JSX.Element => {
+export const TableContainer = ({ id, table, updateTable, locale }: TableContainerProps): ReactElement => {
   const tableVisualizations = table.visualizations != null ? table.visualizations : []
   const [searchFilterIds, setSearchFilterIds] = useState<Set<string>>()
   const [search, setSearch] = useState<string>("")
@@ -28,9 +31,19 @@ export const TableContainer = ({ id, table, updateTable, locale }: TableContaine
   const text = useMemo(() => getTranslations(locale), [locale])
   const [show, setShow] = useState<boolean>(!table.folded)
 
+  // Search sees a date cell as the participant does, so it builds the same display as the table.
+  const cellDisplay = useMemo(
+    () => buildCellDisplay(
+      { head: table.head, dateColumns: table.dateColumns, dateLocale: table.dateLocale },
+      resolveDisplayTimezone(table.displayTimezone),
+      locale
+    ),
+    [table.head, table.dateColumns, table.dateLocale, table.displayTimezone, locale]
+  )
+
   useEffect(() => {
     const timer = setTimeout(() => {
-      const ids = searchRows(table.originalBody.rows, search)
+      const ids = searchRows(table.originalBody.rows, search, cellDisplay)
       setSearchFilterIds(ids)
       if (search !== "" && lastSearch.current === "") {
         setTimeout(() => setShow(true), 10)
@@ -38,13 +51,23 @@ export const TableContainer = ({ id, table, updateTable, locale }: TableContaine
       lastSearch.current = search
     }, 300)
     return () => clearTimeout(timer)
-  }, [search, lastSearch])
+  }, [search, lastSearch, table.originalBody.rows, cellDisplay])
 
   const searchedTable = useMemo(() => {
     if (searchFilterIds === undefined) return table
     const filteredRows = table.body.rows.filter((row) => searchFilterIds.has(row.id))
     return { ...table, body: { ...table.body, rows: filteredRows } }
   }, [table, searchFilterIds])
+
+  // Validate once per table update and share across figures — previously every
+  // Figure deep-cloned the full table via zod (issue #122). Skipped entirely
+  // for tables without visualizations.
+  const validatedTable: ValidatedTable | null = useMemo(() => {
+    if (tableVisualizations.length === 0) return null
+    const result = zTable.safeParse(searchedTable)
+    if (!result.success) console.error(result.error)
+    return result.success ? result.data : null
+  }, [searchedTable, tableVisualizations.length])
 
   const handleDelete = useCallback(
     (rowIds?: string[]) => {
@@ -66,14 +89,14 @@ export const TableContainer = ({ id, table, updateTable, locale }: TableContaine
         updateTable(id, newTable)
       }
     },
-    [id, table, searchedTable]
+    [id, table, searchedTable, updateTable]
   )
 
   const handleUndo = useCallback(() => {
     const deletedRows = table.deletedRows.slice(0, -1)
     const newTable = deleteTableRows(table, deletedRows)
     updateTable(id, newTable)
-  }, [id, table])
+  }, [id, table, updateTable])
 
   const unfilteredRows = table.body.rows.length
 
@@ -125,21 +148,22 @@ export const TableContainer = ({ id, table, updateTable, locale }: TableContaine
         <div
           key="Visualizations"
           className={`pt-2 grid w-full gap-4 transition-all ${
-            tableVisualizations.length > 0 && unfilteredRows > 0 ? "" : "hidden"
+            tableVisualizations.length > 0 && unfilteredRows > 0 && validatedTable != null ? "" : "hidden"
           }`}
         >
-          {tableVisualizations.map((vs: any, i: number) => {
-            return (
-              <Figure
-                key={table.id + "_" + String(i)}
-                tableInput={searchedTable}
-                visualizationInput={vs}
-                locale={locale}
-                handleDelete={handleDelete}
-                handleUndo={handleUndo}
-              />
-            )
-          })}
+          {validatedTable != null &&
+            tableVisualizations.map((vs: any, i: number) => {
+              return (
+                <Figure
+                  key={table.id + "_" + String(i)}
+                  tableInput={validatedTable}
+                  visualizationInput={vs}
+                  locale={locale}
+                  handleDelete={handleDelete}
+                  handleUndo={handleUndo}
+                />
+              )
+            })}
         </div>
       </div>
     </div>
@@ -162,37 +186,6 @@ function deleteTableRows(table: TableWithContext, deletedRows: string[][]): Tabl
     deletedRowCount,
     deletedRows,
   }
-}
-
-function searchRows(rows: PropsUITableRow[], search: string): Set<string> | undefined {
-  if (search.trim() === "") return undefined
-
-  // Not sure whether it's better to look for one of the words or exact string.
-  // Now going for exact string. Note that if you change this, you should also change
-  // the highlighting behavior in table.tsx (<Highlighter searchWords.../>)
-  // const query = search.trim().split(/\s+/)
-  const query = [search.trim()]
-
-  const regexes: RegExp[] = []
-  for (const q of query) {
-    regexes.push(new RegExp(q.replace(/[-/\\^$*+?.()|[\]{}]/, "\\$&"), "i"))
-  }
-
-  const ids = new Set<string>()
-  for (const row of rows) {
-    for (const regex of regexes) {
-      let anyCellMatches = false
-      for (const cell of row.cells) {
-        if (regex.test(cell)) {
-          anyCellMatches = true
-          break
-        }
-      }
-      if (anyCellMatches) ids.add(row.id)
-    }
-  }
-
-  return ids
 }
 
 const zoomInIcon = (
@@ -232,15 +225,26 @@ const zoomOutIcon = (
 )
 
 function getTranslations(locale: string): Record<string, string> {
-  const translated: Record<string, string> = {}
-  for (const [key, value] of Object.entries(translations)) {
-    translated[key] = Translator.translate(value, locale)
-  }
-  return translated
+  return resolveAll(translations, locale)
 }
 
 const translations = {
-  searchPlaceholder: new TextBundle().add("en", "Search").add("nl", "Zoeken"),
-  showTable: new TextBundle().add("en", "Show table").add("nl", "Tabel tonen"),
-  hideTable: new TextBundle().add("en", "Hide table").add("nl", "Tabel verbergen"),
+  searchPlaceholder: new TextBundle()
+    .add("en", "Search")
+    .add("nl", "Zoeken")
+    .add("de", "Suchen")
+    .add("it", "Cerca")
+    .add("es", "Buscar"),
+  showTable: new TextBundle()
+    .add("en", "Show table")
+    .add("nl", "Tabel tonen")
+    .add("de", "Tabelle anzeigen")
+    .add("it", "Mostra tabella")
+    .add("es", "Mostrar tabla"),
+  hideTable: new TextBundle()
+    .add("en", "Hide table")
+    .add("nl", "Tabel verbergen")
+    .add("de", "Tabelle ausblenden")
+    .add("it", "Nascondi tabella")
+    .add("es", "Ocultar tabla"),
 }

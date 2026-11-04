@@ -26,6 +26,25 @@ class CommandSystemDonate:
         return dict
 
 
+class CommandSystemLog:
+    __slots__ = "level", "message"
+
+    def __init__(self, level, message):
+        self.level = level
+        self.message = message
+
+    def toDict(self):
+        import json
+        # Build payload once so json_string can never diverge from the direct fields.
+        payload = {"level": self.level, "message": self.message}
+        return {
+            "__type__": "CommandSystemLog",
+            **payload,
+            # TODO: json_string is temporary for backwards compatibility with mono host, remove once host updated
+            "json_string": json.dumps(payload),
+        }
+
+
 class CommandSystemExit:
     __slots__ = "code", "info"
 

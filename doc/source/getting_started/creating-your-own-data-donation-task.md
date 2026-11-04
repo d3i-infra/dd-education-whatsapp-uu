@@ -1,98 +1,318 @@
 # Creating your own data donation task
 
+Each platform is implemented as a single Python module in `packages/python/port/platforms/`. The module has three responsibilities: validating the uploaded file, extracting tables from it, and subclassing `FlowBuilder` to plug both into the shared donation flow.
 
-After you have forked or cloned and installed the repository you can start creating your own donation task. 
+`example.py` is the minimal working implementation. It accepts any zip file and returns a table of file statistics from the zip's central directory — intentionally simple, so the structure is easy to follow. This guide is based on that file.
 
-You can create your own study by changing and/or adapting the code in the following directory `packages/python/port`
-This directory contains the following files:
+## How it works
 
-* `d3i_example_script.py`: Contains your donation task logic; which screen the participants will see and in what order
-* `api/commands.py`: Contains the render and the donate commands
+When a participant wants to donate their data, the data donation task runs the following sequence automatically:
 
-## `d3i_example_script.py`
+1. Prompt the participant for a file.
+2. Run a safety check on the upload (size limits).
+3. Call your `validate_file()` — if it fails, show a retry prompt and loop back.
+4. Call your `extract_data()` — if it returns no tables, show a no-data page.
+5. Render the consent form with the extracted tables.
+6. Send the donation.
 
-Lets look at the example script in [`d3i_example_script.py`](https://github.com/d3i-infra/data-donation-task/blob/master/packages/python/port/d3i_example_script.py). 
+You implement steps 3 and 4. Everything else is handled by the framework.
 
-`d3i_example_script.py` must contain a function called `process` this function determines the whole data donation task from start to finish (Which screens the participant will see and in what order, and what kind of data extraction will take place). 
+The files involved are:
 
-In this example process defines the following data donation task:
+| File | Role |
+|---|---|
+| `platforms/example.py` | Minimal working platform — start here |
+| `configs/example_config.json` | Generated config that drives extraction and table display |
+| `helpers/flow_builder.py` | Shared flow logic |
+| `helpers/validate.py` | DDP validation utilities |
+| `helpers/extraction_helpers.py` | `ZipArchiveReader` for reading files out of a zip |
+| `helpers/table_extractor.py` | Loads the config and runs extractor functions |
 
-1. Ask the participant to submit a zip file
-2. Perform validation on the submitted zip file, if not valid return to step 1
-3. Extract the data from the submitted zip file
-4. Render the extract data on screen in a table
-5. Send the data to the data storage upon consent
+---
 
-Although these can vary per data donation task, they will be mostly similar.
+## Adding a new platform
 
-The `d3i_example_script.py` is annotated, read it carefully and see whether you can follow the logic.
+### Step 1 — Copy the example
+
+```sh
+cp packages/python/port/platforms/example.py packages/python/port/platforms/myplatform.py
+```
+
+Read through the copy before modifying it. Each section is commented and the structure maps directly to the steps below.
+
+### Step 2 — Write extractor functions
+
+An extractor reads one or more files from the zip and returns a `pd.DataFrame`:
+
+```python
+from collections import Counter
+import pandas as pd
+from port.helpers.extraction_helpers import ZipArchiveReader
+
+def my_data_to_df(reader: ZipArchiveReader, errors: Counter) -> pd.DataFrame:
+    result = reader.json("path/to/data.json")
+    if not result.found:
+        return pd.DataFrame()
+    return pd.DataFrame(result.data)
+```
+
+`ZipArchiveReader` provides `reader.json()`, `reader.csv()`, and `reader.raw()`. Each returns a result object with a `found` attribute — if the file is absent, `found` is `False` and no exception is raised. This is important because DDP exports are not always consistent across participants.
+
+Each extractor function must also include a `Table config::` JSON block in its docstring. The config generator reads these blocks to produce the consent-form table definition:
+
+```python
+def my_data_to_df(reader: ZipArchiveReader, errors: Counter) -> pd.DataFrame:
+    """Extract my data.
+
+    Table config::
+
+        {
+          "id": "myplatform_my_data",
+          "title": {"en": "My data", "nl": "Mijn data"},
+          "description": {
+            "en": "Description shown to the participant.",
+            "nl": "Beschrijving voor de deelnemer."
+          },
+          "headers": {
+            "column_a": {"en": "Column A", "nl": "Kolom A"}
+          },
+          "visualizations": []
+        }
+    """
+    ...
+```
+
+See `example.py` for a complete block, including a word cloud visualization.
+
+### Step 3 — Register your extractors
+
+At the module level, map each function name to its implementation:
+
+```python
+EXTRACTOR_REGISTRY: dict[str, Callable[..., pd.DataFrame]] = {
+    "my_data_to_df": my_data_to_df,
+}
+```
+
+One entry per extractor. The keys are referenced by the config file.
+
+### Step 4 — Generate the config
+
+```sh
+pnpm generate-config myplatform
+```
+
+This scans the `Table config::` blocks in your docstrings and writes `packages/python/port/configs/myplatform_config.json`. The generator will not overwrite an existing file, so manual edits are safe.
+
+After generating, open the config and adjust the titles and descriptions to match your study's language and framing.
+
+### Step 5 — Run the dev server
+
+```sh
+VITE_PLATFORM=myplatform pnpm start
+```
+
+Open `http://localhost:3000` and upload a zip to test your platform.
+
+---
+
+## Implementation details
+
+### FlowBuilder
+
+Subclass `FlowBuilder` and implement `validate_file` and `extract_data`:
+
+```python
+class MyPlatformFlow(FlowBuilder):
+    def __init__(self, session_id: str):
+        super().__init__(session_id, "myplatform")
+
+    def validate_file(self, file) -> ValidateInput:
+        return validate_my_file(file)
+
+    def extract_data(self, file, validation: ValidateInput) -> ExtractionResult:
+        return extraction(file, validation)
 
 
-## Start writing your own `d3i_example_script.py` using the api
+def process(session_id: str):
+    flow = MyPlatformFlow(session_id)
+    return flow.start_flow()
+```
 
-Now that you have seen a full example, you can start to try and create your own data donation task. With the elements from the example you can already build some pretty intricate data donation tasks.
-Start creating your own by `d3i_example_script.py` by adapting this example to your own needs, for example, instead of file names you could extract data you would actually like to extract yourself.
+`FlowBuilder` calls these methods at the appropriate points in the flow. You do not call them directly.
 
-If you want to see which up what UI elements are available to you checkout `api/props.py` or `api/d3i_props.py`.
+### The `extraction()` function
 
-## The usage of `yield` in `d3i_example_script.py`
+```python
+def extraction(zip_path, validation: ValidateInput) -> ExtractionResult:
+    config = load_port_config(EXTRACTOR_REGISTRY, "myplatform")
+    errors: Counter = Counter()
+    reader = ZipArchiveReader(zip_path, validation.archive_members, errors)
+    return run_extraction(reader, errors, config)
+```
 
-`yield` makes sure that whenever the code resumes after a page render, it starts where it left off.
-If you render a page you need to use yield instead of return, just like in the example.
+`load_port_config` reads the config JSON and matches each table entry to an extractor in `EXTRACTOR_REGISTRY`. `run_extraction` calls each extractor and returns the non-empty results as an `ExtractionResult`. Passing `validation.archive_members` avoids re-opening the zip.
 
-## Install Python packages
+### Validation
 
-The data donation task runs in the browser of the participant, it is important to understand that when Python is running in your browser it is not using the Python version you have installed on your system.
-The data donation task is using [Pyodide](https://pyodide.org/en/stable/) this is Python compiled to web assembly that runs in the browser. 
-This means that packages you have available on your system install of Python, won't be available in the browser.
+Validation determines whether the uploaded file is the expected kind of zip.
 
-If you want to use external packages they should be available for Pyodide, you can check the list of available packages [here](https://pyodide.org/en/stable/usage/packages-in-pyodide.html).
-If you have found a package you want to use you can installed it by adding it to the array in the `loadPackages` function in `src/framework/processing/py_worker.js` as shown below:
+In `example.py` this is intentionally minimal — it only checks that the file opens as a valid zip:
+
+```python
+def validate_zip_file(path_to_zip) -> ValidateInput:
+    status_codes = [
+        StatusCode(id=0, description="Valid zip file"),
+        StatusCode(id=1, description="Not a valid zip file"),
+    ]
+    v = ValidateInput(status_codes, [])
+    try:
+        with zipfile.ZipFile(path_to_zip, "r") as zf:
+            v.archive_members = zf.namelist()
+        v.set_current_status_code_by_id(0)
+    except zipfile.BadZipFile:
+        v.set_current_status_code_by_id(1)
+    return v
+```
+
+Status code `0` means valid; any other value triggers the retry prompt in `FlowBuilder`.
+
+For a real study, use `validate.validate_zip(DDP_CATEGORIES, file)` instead. This opens the zip, reads filenames from the central directory, and calls `infer_ddp_category()`, which computes what fraction of the `known_files` for each category are present. If at least 5% of the known files for any category are found, that category is matched and status code `0` is returned. Otherwise the zip is rejected.
+
+`DDP_CATEGORIES` lists the file names that are characteristic of the platform's export format:
+
+```python
+from port.helpers.validate import DDPCategory, DDPFiletype, Language
+
+DDP_CATEGORIES = [
+    DDPCategory(
+        id="json_en",
+        ddp_filetype=DDPFiletype.JSON,
+        language=Language.EN,
+        known_files=["personal_information.json", "liked_posts.json", "followers.json"],
+    ),
+]
+```
+
+The matched category is stored on the returned `ValidateInput` as `validation.current_ddp_category` and is available inside `extract_data` if your extractor needs to branch on format.
+
+---
+
+## Comparison with a real platform
+
+Once you're comfortable with the example, `packages/python/port/platforms/instagram.py` is a useful reference. It follows the same structure, but differs from the example in a few key ways:
+
+- `DDP_CATEGORIES` lists dozens of known Instagram export filenames, so the validator only accepts genuine Instagram exports.
+- `validate.validate_zip(DDP_CATEGORIES, file)` replaces the bare zip-open check.
+- Multiple extractor functions each parse a specific file from the export (liked posts, followers, login activity, and others).
+- Extractors read actual file contents with `reader.json()` rather than only inspecting the zip central directory.
+
+The example skips DDP matching on purpose — it lets you test the full flow with any zip file. For a study collecting real participant data, define `DDP_CATEGORIES` and write extractors for the specific files your platform exports.
+
+---
+
+## Multi-file platforms
+
+Some exports arrive as several zip parts that belong together — a Google
+Takeout export split across multiple files is the common case. To accept
+that instead of a single zip, set `expected_file_payload` on your flow
+class and annotate both hook overrides as `ArchiveSet`:
+
+```python
+from port.helpers.archive_set import ArchiveSet
+
+class MyPlatformFlow(FlowBuilder):
+    expected_file_payload = "PayloadFiles"
+
+    def __init__(self, session_id: str):
+        super().__init__(session_id, "myplatform")
+
+    def validate_file(self, archive_set: ArchiveSet) -> ValidateInput:
+        return validate_my_archive_set(archive_set)
+
+    def extract_data(self, archive_set: ArchiveSet, validation: ValidateInput) -> ExtractionResult:
+        return extraction(archive_set, validation)
+```
+
+This one attribute changes three things: the participant sees a multi-select
+file picker instead of a single-file one, `FlowBuilder` unions whatever
+parts they select into one `ArchiveSet` (raising a retry prompt instead of a
+traceback if a part is corrupt), and `validate_file`/`extract_data` receive
+that `ArchiveSet` rather than a single reader. Everything downstream is
+unchanged — `ZipArchiveReader(archive_set, validation.archive_members,
+errors)` works the same way it does for a single-file platform, because
+`ArchiveSet` satisfies the same `ArchiveSource` protocol
+`SingleArchiveSource` wraps a single zip in.
+
+See `packages/python/port/platforms/e2etest_multifile.py` for a minimal
+working multi-file platform, and `tests/multifile.spec.ts` for the
+Playwright coverage of the multi-select upload flow.
+
+---
+
+## Python packages
+
+The task runs in the participant's browser via [Pyodide](https://pyodide.org/en/stable/), a Python runtime compiled to WebAssembly, so locally installed packages are not available. Check the [Pyodide package list](https://pyodide.org/en/stable/usage/packages-in-pyodide.html) and add what you need to `packages/data-collector/public/py_worker.js`:
 
 ```javascript
-// src/framework/processing/py_worker.js
 function loadPackages() {
-  console.log('[ProcessingWorker] loading packages')
-  // These packages are now installed and usable: micropip, numpy, pandas, and lxml
   return self.pyodide.loadPackage(['micropip', 'numpy', 'pandas', 'lxml'])
 }
 ```
 
-You can now import the packages as you would normally do in Python.
+---
 
-## Try the donation task from the perspective of the participant
+## Parsing large HTML files
 
-If you want to try out the above example, follow the installation instructions and start the server with `pnpm run start`.
+Some exports include huge HTML files — a heavy user's watch or search history can run to
+hundreds of megabytes. Parse those with streaming lxml, not BeautifulSoup: BeautifulSoup
+has no streaming mode, so it builds the whole DOM in memory before you can read anything
+out of it — too slow in Pyodide, and it blows the participant's memory budget on a
+multi-hundred-MB member. Reading the whole member into memory first with `.read()` before
+handing it to any parser has the same problem, streaming lxml or not.
 
-## Tips when writing your own `d3i_example_script.py`
+Use `etree.iterparse` fed directly from `ZipArchiveReader.open_member()` (a context
+manager yielding the member's decompression stream, not a materialized buffer), and clear
+each element once you're done with it so the tree doesn't grow with the file:
 
-**Split the extraction logic from the data donation task logic**
-You can define your own modules where you create your data extraction, you can `import` those modules in `d3i_example_script.py`
+```python
+from lxml import etree
 
-**Develop in separate script**
-You are better off engineering your extraction logic in different scripts and put them in `d3i_example_script.py` whenever you are finished developing. Only do small tweaks in `d3i_example_script.py`
+with reader.open_member("path/to/History.html") as stream:
+    if stream is None:
+        return pd.DataFrame()
+    records = []
+    for _, cell in etree.iterparse(stream, html=True, tag="div", events=("end",), encoding="utf-8"):
+        if "the-class-you-want" in (cell.get("class") or ""):
+            records.append(...)  # read what you need out of `cell` here
+        cell.clear()
+        while cell.getprevious() is not None:
+            del cell.getparent()[0]
+```
 
-**Use the console in your browser**
-In case of errors they will show up in the browser console. You can use `print` in the Python script and it will show up in the browser console.
+Two more things worth knowing before you copy this: pass `encoding` explicitly.
+Google Takeout's activity HTML ships with no `<meta charset>` in its `<head>`, and lxml's
+HTML parser silently falls back to latin-1 when it can't find one — every non-ASCII byte
+comes out double-decoded (mojibake) with no error raised anywhere. Takeout's export bytes
+are UTF-8; don't assume every export is, but always pin the encoding you've verified
+rather than trusting the parser's guess.
 
-**Keep the diverse nature of DDPs into account**
-At least check a couple of DDPs to make sure its reflective of the population you are interesed in. Thinks you can check are: data formats (html, json, plain text, csv, etc.), language settings (they somethines lead to json keys being in a different language or file names other than English).
+`port/platforms/google.py`'s `_parse_activity_html` is the reference implementation —
+it streams an `mdl-grid`/`outer-cell` activity page this way, one activity at a time,
+and its docstring has the full account of what this bounds and what it doesn't: it
+keeps the *parse* proportional to one activity rather than to file size, but the
+records list it returns — and everything downstream of it (tables, consent transport,
+donation serialization) — still scales with row count and stays unbounded. See the
+memory ADR (`docs/decisions/0034-*.md`) for the measured numbers behind that split.
 
-**Keep your code efficient**
-If your code is not efficient the extraction will take longer, which can result in a bad experience for the participant. In practice I have found that in most cases it's not really an issue, and don't have to pay that much attention to efficiency of your code.
-Where efficiency really matters is when you have parse huge html files, beautifulsoup4 is a library that is commonly used to do this, this library is too slow however. As an alternative you can use lxml which is fast enough.
+---
 
-**Don't let your code crash**
-You cannot have your script crash, if your Python script crashes the task stops as well. This is not a good experience for your participant.
-For example in the code you do the following: `value_i_want_to_extract = extracted_data_in_a_dictionary["interesting key"]` if the key `"interesting key"` does not exists, because it does not occur in the data of the participant, the script crashes and the participant cannot continue the data donation task.
+## Practical notes
 
-**Data donation checklist**
-Creating a good data donation task can be hard due to the variety of DDPs you will encounted. 
-Check out the following [wiki article](https://github.com/d3i-infra/data-donation-task/wiki/Data-donation-checklist)
+**Use the browser console for debugging.** `print()` and `logging` output appears in DevTools and stays local — nothing is sent to the server.
 
-## Limits of the data donation task
+**Test with several different exports.** Filenames, folder layout, and JSON structure can differ by platform language and export version.
 
-Currently the data donation task has the following limitations:
+**Extractors should not raise.** An uncaught exception in an extractor will stop the donation task. Use `try/except` and record errors with `errors[type(e).__name__] += 1`, then return an empty DataFrame.
 
-* The data donation task is a frontend, you need to package this together with Next to deploy it. If you want to use it with your own backend you have to make the data donation task compatible with it yourself. A tutorial on how to do this might be added in the future.
-* The data donation task is running in the browser of the participant that brings in limitations, such as constraints on the files participant can submit. The limits are around 4 GiB thats what Pyodide can handle. But less is better. So keep that in mind whenever you, for example, want to collect data from YouTube: your participants should exclude their own personal videos from their DDP (including these would result in a huge number of separate DDPs of around 4 GiB).
+**Before going live**, work through the [data donation checklist](data-donation-checklist.md).

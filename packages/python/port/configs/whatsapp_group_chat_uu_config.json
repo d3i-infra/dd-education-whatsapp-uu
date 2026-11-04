@@ -1,0 +1,137 @@
+{
+  "platform_info": {
+    "name": "WhatsApp group chat",
+    "filetypes": [
+      "zip"
+    ],
+    "languages": [
+      "en",
+      "nl"
+    ],
+    "description": "UU course variant of the WhatsApp group chat flow: members are anonymised (Member 1 is the participant) and message text is redacted. Requires a group chat with more than three members.",
+    "time_last_tested": "not yet implemented"
+  },
+  "tables": [
+    {
+      "id": "whatsapp_uu_group_chat",
+      "title": {
+        "en": "Your group chat",
+        "nl": "Je groepsgesprek"
+      },
+      "description": {
+        "en": "The contents of your group chat, with names anonymised and message text hidden. Try searching in your group chat, the figures should change accordingly! Timestamps (and therefore some figures) can be incorrect as the European date format is assumed.",
+        "nl": "De inhoud van je groepsgesprek, met geanonimiseerde namen en verborgen berichttekst. Probeer te zoeken in je groepsgesprek, de figuren veranderen dan mee! Tijdstempels (en dus sommige figuren) kunnen onjuist zijn omdat het Europese datumformaat wordt aangenomen."
+      },
+      "headers": {
+        "Timestamp": {
+          "en": "Timestamp",
+          "nl": "Tijdstempel"
+        },
+        "Name": {
+          "en": "Name",
+          "nl": "Naam"
+        },
+        "Message": {
+          "en": "Message",
+          "nl": "Bericht"
+        }
+      },
+      "date_columns": {
+        "Timestamp": {
+          "encoding": "iso-8601"
+        }
+      },
+      "visualizations": [
+        {
+          "title": {
+            "en": "Total chats per hour of the day",
+            "nl": "Totaal chats per uur van de dag"
+          },
+          "type": "bar",
+          "group": {
+            "column": "Timestamp",
+            "dateFormat": "hour_cycle"
+          },
+          "values": [
+            {}
+          ]
+        }
+      ],
+      "extractor": "chat_messages_to_df",
+      "documentation": {
+        "summary": "Each row is one message of the group chat: when it was sent, the anonymised sender, and the message text with every non-whitespace character replaced by '*'.",
+        "source_file": "WhatsApp chat export (.zip)",
+        "columns": {
+          "Timestamp": "Time the message was sent, on the phone's clock (ISO 8601, no time zone).",
+          "Name": "Anonymised sender: Member 1 is the participant.",
+          "Message": "Redacted message text (word lengths preserved)."
+        }
+      }
+    },
+    {
+      "id": "whatsapp_uu_emoji_usage",
+      "title": {
+        "en": "The 100 most used emojis in the group",
+        "nl": "De 100 meest gebruikte emoji's in de groep"
+      },
+      "description": {
+        "en": "Analysis of emoji frequency used by all members in the chat.",
+        "nl": "Analyse van emoji-frequentie gebruikt door alle leden in de chat."
+      },
+      "headers": {
+        "Emoji": {
+          "en": "Emoji",
+          "nl": "Emoji"
+        },
+        "Count": {
+          "en": "Count",
+          "nl": "Aantal"
+        }
+      },
+      "extractor": "emoji_usage_to_df",
+      "documentation": {
+        "summary": "Each row is one emoji used in the group chat, ranked by frequency across all members.",
+        "source_file": "WhatsApp chat export (.zip)",
+        "columns": {
+          "Emoji": "The emoji character.",
+          "Count": "Total number of times this emoji was used."
+        }
+      }
+    },
+    {
+      "id": "whatsapp_uu_member_statistics",
+      "title": {
+        "en": "Chat statistics per member (you are Member 1)",
+        "nl": "Chatstatistieken per lid (jij bent Member 1)"
+      },
+      "description": {
+        "en": "For each anonymised member of the group chat: who reacts to them the most, who they react to the most, the number of messages and words they sent, and their most used emoji.",
+        "nl": "Voor elk geanonimiseerd lid van de groepschat: wie het meest op hen reageert, op wie zij het meest reageren, het aantal verstuurde berichten en woorden, en hun meest gebruikte emoji."
+      },
+      "headers": {
+        "Member": {
+          "en": "Member",
+          "nl": "Lid"
+        },
+        "Description": {
+          "en": "Description",
+          "nl": "Beschrijving"
+        },
+        "Statistic": {
+          "en": "Statistic",
+          "nl": "Statistiek"
+        }
+      },
+      "extractor": "member_statistics_to_df",
+      "documentation": {
+        "summary": "Each row is one messaging statistic for one anonymised member (Member 1 is the participant).",
+        "source_file": "WhatsApp chat export (.zip)",
+        "columns": {
+          "Member": "Anonymised member: Member 1 is the participant.",
+          "Description": "Name of the statistic.",
+          "Statistic": "Value of the statistic."
+        }
+      }
+    }
+  ]
+}

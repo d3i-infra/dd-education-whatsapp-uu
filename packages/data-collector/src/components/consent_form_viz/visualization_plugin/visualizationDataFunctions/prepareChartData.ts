@@ -1,22 +1,25 @@
-import { formatDate, getTableColumn } from './util'
+import { formatDate, getTableColumn, resolveDisplayTimezone } from './util'
+import { interpretTimestamp, wallClockInZone, isEmptyCell, Interpretation } from './interpretTimestamp'
 import { Table, TickerFormat, ChartVisualizationData, ChartVisualization, AxisSettings } from '../types'
 
 export async function prepareChartData (
   table: Table,
   visualization: ChartVisualization
 ): Promise<ChartVisualizationData> {
-  if (table.body.rows.length === 0) return { type: visualization.type, xKey: '', xLabel: '', yKeys: {}, data: [] }
+  if (table.body.rows.length === 0) return { type: visualization.type, xKey: '', xLabel: '', yKeys: {}, data: [], unplotted: 0 }
 
-  const aggregate = aggregateData(table, visualization)
-  return createVisualizationData(table, visualization, aggregate)
+  const { aggregate, unplotted } = aggregateData(table, visualization)
+  return createVisualizationData(table, visualization, aggregate, unplotted)
 }
 
 function createVisualizationData (
   table: Table,
   visualization: ChartVisualization,
-  aggregate: Record<string, PrepareAggregatedData>
+  aggregate: Record<string, PrepareAggregatedData>,
+  unplotted: number
 ): ChartVisualizationData {
   const visualizationData = initializeVisualizationData(table, visualization)
+  visualizationData.unplotted = unplotted
 
   visualizationData.data = Object.values(aggregate)
     .sort((a: any, b: any) => (a.sortBy < b.sortBy ? -1 : b.sortBy < a.sortBy ? 1 : 0))
@@ -57,14 +60,15 @@ function initializeVisualizationData (table: Table, visualization: ChartVisualiz
     xKey: visualization.group.column,
     xLabel: visualization.group.label,
     yKeys,
-    data: []
+    data: [],
+    unplotted: 0
   }
 }
 
-function aggregateData (table: Table, visualization: ChartVisualization): Record<string, PrepareAggregatedData> {
+function aggregateData (table: Table, visualization: ChartVisualization): { aggregate: Record<string, PrepareAggregatedData>, unplotted: number } {
   const aggregate: Record<string, PrepareAggregatedData> = {}
 
-  const { groupBy, xSortable } = prepareX(table, visualization)
+  const { groupBy, xSortable, unplotted, placed } = prepareX(table, visualization)
   const rowIds = table.body.rows.map((row) => row.id)
   const xKey = visualization.group.column
 
@@ -101,6 +105,8 @@ function aggregateData (table: Table, visualization: ChartVisualization): Record
 
     for (let i = 0; i < rowIds.length; i++) {
       // loop over rows of table
+      if (placed[i] === false) continue
+
       const xValue = groupBy[i]
 
       if (visualization.group.range !== undefined) {
@@ -110,6 +116,11 @@ function aggregateData (table: Table, visualization: ChartVisualization): Record
       }
 
       const yValue = yValues[i]
+      // Number() never returns null/undefined (only NaN for unparsable input), so
+      // `Number(yValue) ?? 0` never actually falls back -- a non-numeric cell poisons
+      // the running sum with NaN. Guard against NaN explicitly instead.
+      const numericYValue = Number(yValue)
+      const yValueOrZero = Number.isNaN(numericYValue) ? 0 : numericYValue
       const group = yGroup != null ? yGroup[i] : value.column
 
       const sortBy = xSortable != null ? xSortable[xValue] : groupBy[i]
@@ -117,7 +128,7 @@ function aggregateData (table: Table, visualization: ChartVisualization): Record
       // calculate group summary statistics. This is used for the mean, pct and count_pct aggregations
       if (groupSummary[group] === undefined) groupSummary[group] = { n: 0, sum: 0 }
       if (aggFun === 'count_pct' || aggFun === 'mean') groupSummary[group].n += 1
-      if (aggFun === 'pct') groupSummary[group].sum += Number(yValue) ?? 0
+      if (aggFun === 'pct') groupSummary[group].sum += yValueOrZero
 
       if (aggregate[xValue] === undefined) {
         aggregate[xValue] = {
@@ -135,7 +146,7 @@ function aggregateData (table: Table, visualization: ChartVisualization): Record
       if (aggregate[xValue].values[group] === undefined) aggregate[xValue].values[group] = 0
       if (aggFun === 'count' || aggFun === 'count_pct') aggregate[xValue].values[group] += 1
       if (aggFun === 'sum' || aggFun === 'mean' || aggFun === 'pct') {
-        aggregate[xValue].values[group] += Number(yValue) ?? 0
+        aggregate[xValue].values[group] += yValueOrZero
       }
     }
 
@@ -159,23 +170,49 @@ function aggregateData (table: Table, visualization: ChartVisualization): Record
     })
   }
 
-  return aggregate
+  return { aggregate, unplotted }
 }
 
 function prepareX (
   table: Table,
   visualization: ChartVisualization
-): { groupBy: string[], xSortable: Record<string, string | number> | null } {
-  let groupBy = getTableColumn(table, visualization.group.column)
-  if (groupBy.length === 0) {
-    throw new Error(`X column ${table.id}.${visualization.group.column} not found`)
+): { groupBy: string[], xSortable: Record<string, string | number> | null, unplotted: number, placed: boolean[] } {
+  const column = visualization.group.column
+  const raw = getTableColumn(table, column)
+  if (raw.length === 0) {
+    throw new Error(`X column ${table.id}.${column} not found`)
   }
+  let groupBy: string[] = raw
   // let xSortable: Array<string | number> | null = null // separate variable allows using epoch time for sorting dates
   let xSortable: Record<string, string | number> | null = null // map x values to sortable values
+  let unplotted = 0
+  const placed = new Array<boolean>(raw.length).fill(true)
 
   // ADD CODE TO TRANSFORM TO DATE, BUT THEN ALSO KEEP AN INDEX BASED ON THE DATE ORDER
   if (visualization.group.dateFormat !== undefined) {
-    ;[groupBy, xSortable] = formatDate(groupBy, visualization.group.dateFormat)
+    // A column with no declared spec is never guessed at (ADR-0043): every non-empty row is
+    // unplotted, handled explicitly here (empty cells still report `empty`, via the same check
+    // interpretTimestamp itself uses) rather than by fabricating a `{ encoding: [] }` sentinel
+    // spec the schema forbids (ts-idiom-merged T49).
+    const spec = table.dateColumns?.[column]
+    const zone = resolveDisplayTimezone(table.displayTimezone)
+    const ctx = { locale: table.dateLocale }
+    const wall: Array<number | null> = new Array(raw.length)
+    for (let i = 0; i < raw.length; i++) {
+      const r: Interpretation = spec !== undefined
+        ? interpretTimestamp(raw[i], spec, ctx)
+        : (isEmptyCell(raw[i]) ? { status: 'empty' } : { status: 'unsupported' })
+      if (r.status === 'instant') {
+        wall[i] = wallClockInZone(r.epochMs, zone)
+      } else if (r.status === 'local') {
+        wall[i] = r.wallClockMs
+      } else {
+        wall[i] = null
+        placed[i] = false
+        if (r.status !== 'empty') unplotted++
+      }
+    }
+    ;[groupBy, xSortable] = formatDate(wall, visualization.group.dateFormat)
   }
 
   if (visualization.group.levels !== undefined) {
@@ -187,7 +224,7 @@ function prepareX (
     }
   }
 
-  return { groupBy, xSortable }
+  return { groupBy, xSortable, unplotted, placed }
 }
 
 export interface PrepareAggregatedData {

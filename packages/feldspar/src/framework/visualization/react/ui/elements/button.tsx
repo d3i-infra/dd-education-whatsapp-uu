@@ -19,14 +19,16 @@ export const PrimaryButton = ({ label, spinning = false, enabled = true, color =
   return (
     <div role="button" className='relative'>
       <div className={`flex flex-col items-center leading-none font-button text-button rounded ${enabled ? 'cursor-pointer active:shadow-top4px' : ''} ${color}`} onClick={onClick}>
+        {/* While spinning, keep the label with `opacity-0` (not `hidden`) so the
+            button retains its size, and overlay the spinner with `absolute`. Using
+            `hidden` collapses the button and the spinner has nothing to cover — see
+            issue #60 / commit e628943. */}
         <div id='confirm-button' className={`pt-15px pb-15px pr-4 pl-4 ${enabled ? 'active:pt-4 active:pb-14px' : ''} ${spinning ? 'opacity-0' : ''}`}>
           {label}
         </div>
       </div>
       <div className={`absolute top-0 h-full w-full flex flex-col justify-center items-center ${spinning ? '' : 'hidden'}`}>
-        <div className='w-5 h-5'>
-          <Spinner color={spinnerColor(color)} spinning={spinning} />
-        </div>
+        <Spinner color={spinnerColor(color)} spinning={spinning} />
       </div>
     </div>
   )
@@ -64,11 +66,11 @@ export const IconButton = ({ icon, onClick }: Weak<PropsUIButtonIcon>): JSX.Elem
   return (
     <div role="button" className='active:pt-5px active:pb-3px focus:outline-none cursor-pointer w-6 h-6' onClick={onClick}>
       <div className='flex flex-col items-center h-full w-full'>
-        <div className='flex-grow' />
+        <div className='grow' />
         <div>
           <img className='-mt-2px' src={icon} />
         </div>
-        <div className='flex-grow' />
+        <div className='grow' />
       </div>
     </div>
   )

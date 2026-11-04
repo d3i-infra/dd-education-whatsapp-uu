@@ -5,21 +5,49 @@ This module provides an example flow of a ChatGPT data donation study
 
 Assumptions:
 It handles DDPs in the english language with filetype JSON.
+
+Configuration
+-------------
+The ``extraction`` function is driven by ``port_config.json``.  Generate one with::
+
+    pnpm generate-config chatgpt
+
+Each extractor function carries its own table config in a ``Table config::``
+JSON block inside its docstring.  The generator reads those blocks and
+assembles the JSON file.
+
+Platform info::
+
+    {
+        "name": "ChatGPT",
+        "filetypes": ["json"],
+        "languages": ["en", "nl"],
+        "description": "Handles DDPs in English. These data donation flows have not been tested yet, if you find anything wrong with them report to datadonation@uu.nl and they will be fixed!",
+        "time_last_tested": "not yet implemented"
+    }
 """
 import logging
+from collections import Counter
+from typing import Any, Callable
 
 import pandas as pd
+import json
 
-import port.api.props as props
-import port.api.d3i_props as d3i_props
 import port.helpers.extraction_helpers as eh
 import port.helpers.validate as validate
-from port.platforms.flow_builder import FlowBuilder
+from port.helpers.extraction_helpers import ZipArchiveReader
+from port.helpers.flow_builder import FlowBuilder
 
 from port.helpers.validate import (
     DDPCategory,
     DDPFiletype,
     Language,
+)
+from port.api.d3i_props import ExtractionResult
+from port.api.file_utils import SeekableBinaryReader
+from port.helpers.table_extractor import (
+    load_port_config,
+    run_extraction,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,8 +58,9 @@ DDP_CATEGORIES = [
         ddp_filetype=DDPFiletype.JSON,
         language=Language.EN,
         known_files=[
-            "chat.html", 
+            "chat.html",
             "conversations.json",
+            "conversations-000.json",
             "message_feedback.json",
             "model_comparisons.json",
             "user.json"
@@ -40,90 +69,263 @@ DDP_CATEGORIES = [
 ]
 
 
-def conversations_to_df(chatgpt_zip: str)  -> pd.DataFrame:
-    b = eh.extract_file_from_zip(chatgpt_zip, "conversations.json")
-    conversations = eh.read_json_from_bytes(b)
+def shown_message_ids(conversation: dict) -> set[str] | None:
+    """Return the ids of the messages ChatGPT shows in a conversation.
+
+    A conversation is a tree: regenerating a reply, editing a prompt or
+    picking one of two compared replies adds a sibling branch under the same
+    parent. ChatGPT shows only the path from ``current_node`` back to the
+    root; every message off that path is hidden from the conversation.
+
+    Returns None when that path can't be determined (no or unknown
+    ``current_node``), so callers don't mark anything as hidden.
+    """
+    mapping = conversation["mapping"]
+    node_id = conversation.get("current_node")
+    if not isinstance(node_id, str) or node_id not in mapping:
+        return None
+
+    shown: set[str] = set()
+    # The shown check guards against a cyclic parent chain in malformed data.
+    while isinstance(node_id, str) and node_id in mapping and node_id not in shown:
+        shown.add(node_id)
+        node = mapping[node_id]
+        node_id = node.get("parent") if isinstance(node, dict) else None
+    return shown
+
+
+def _time_sort_key(value: Any) -> tuple[int, float]:
+    """Sort key for the raw ``create_time`` cell; never raises.
+
+    ``value`` can be a native int/float (the common case), ``None`` or ``""``
+    (a system/tool message with no timestamp), or — from a malformed export —
+    an unparsable string. All four must sort without raising: an exception
+    here would propagate to the broad ``except`` around the whole conversation
+    loop and silently drop every message in it, not just the bad one.
+    Empties and malformed values sort last (``(1, 0.0)``); real timestamps
+    sort by their numeric value (``(0, float(value))``).
+    """
+    try:
+        return (0, float(value))
+    except (TypeError, ValueError):
+        return (1, 0.0)
+
+
+def conversations_to_df(reader: ZipArchiveReader, errors: Counter) -> pd.DataFrame:
+    """Extract all ChatGPT conversations into a DataFrame.
+
+    Parameters
+    ----------
+    reader:
+        Archive reader used to load JSON files from the DDP zip.
+    errors:
+        Mutable counter that accumulates error type counts encountered during
+        extraction.  Updated in-place.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ``conversation title``, ``role``, ``message``, ``content type``, ``model``, ``time``, ``message id``, ``reaction to``, ``hidden``, ``content references``, ``search_result_groups``.
+        Empty DataFrame when the file is absent or parsing fails.
+
+    Table documentation::
+
+        {
+          "summary": "Each row represents one message turn in a ChatGPT conversation, including the role (user or assistant), the message text, the model used, and the timestamp.",
+          "source_file": "conversations files (conversations-000.json, conversations-001.json, ... or conversations.json)",
+          "columns": {
+            "conversation title": "Title of the conversation as stored in the export.",
+            "role": "Role of the message author: 'user' or 'assistant'.",
+            "message": "Full text of the message.",
+            "content type": "The content type of the message, e.g. 'text', 'multimodal_text', 'thoughts', or 'reasoning_recap'.",
+            "model": "ChatGPT model slug used to generate the assistant reply.",
+            "time": "Time of the message (Unix seconds).",
+            "message id": "A unique identifier for the message.",
+            "reaction to": "The id of the message this message reacts to. ``client-created-root`` indicates the first message in the chat.",
+            "hidden": "True when ChatGPT doesn't show the message in the conversation: it is on another branch than the one currently shown, e.g. an earlier version of a regenerated reply, a reply to an edited prompt, or the reply not picked when two were compared. False when shown, or when the export doesn't say which branch is shown.",
+            "content references": "Contains content items that are referenced in the message.",
+            "search_result_groups": "Contains the web search result groups (sources) used to ground the message, if any."
+          }
+        }
+
+    Table config::
+
+        {
+          "id": "chatgpt_conversations",
+          "title": {
+            "en": "Your conversations",
+            "nl": "Uw gesprekken"
+          },
+          "description": {
+            "en": "In this table you find your conversations with ChatGPT sorted by time. Below, you find a wordcloud, where the size of the words represents how frequent these words have been used in the conversations.",
+            "nl": "In deze tabel vind je je gesprekken met ChatGPT gesorteerd op tijd. Hieronder vind je een woordwolk, waarbij de grootte van de woorden aangeeft hoe vaak ze zijn gebruikt in de gesprekken."
+          },
+          "headers": {
+            "conversation title": {"en": "Conversation title", "nl": "Gesprektitel"},
+            "role": {"en": "Role", "nl": "Rol"},
+            "message": {"en": "Message", "nl": "Bericht"},
+            "content type": {"en": "Content type", "nl": "Inhoudstype"},
+            "model": {"en": "Model", "nl": "Model"},
+            "time": {"en": "Time", "nl": "Tijd"},
+            "message id": {"en": "ID", "nl": "ID"},
+            "reaction to": {"en": "Reaction to", "nl": "Reactie op"},
+            "hidden": {"en": "Hidden", "nl": "Verborgen"},
+            "content references": {"en": "Content references", "nl": "Content referenties"},
+            "search_result_groups": {"en": "Search result groups", "nl": "Zoekresultaatgroepen"}
+          },
+          "visualizations": [
+            {
+              "title": {
+                "en": "Messages over time",
+                "nl": "Berichten in de loop van de tijd"
+              },
+              "type": "area",
+              "group": {"column": "time", "dateFormat": "auto"},
+              "values": [{"aggregate": "count", "label": "Count"}]
+            },
+            {
+              "title": {
+                "en": "Your messages in a wordcloud",
+                "nl": "Je berichten in een woordwolk"
+              },
+              "type": "wordcloud",
+              "textColumn": "message",
+              "tokenize": true
+            }
+          ],
+          "date_columns": {"time": {"encoding": "epoch-seconds"}}
+        }
+    """
+    results = reader.json_all(r"^conversations.*\.json")
+    if not results:
+        return pd.DataFrame()
+    conversations = [conv for result in results for conv in result.data]
 
     datapoints = []
     out = pd.DataFrame()
 
     try:
         for conversation in conversations:
-            title = conversation["title"]
-            for _, turn in conversation["mapping"].items():
+            title = conversation.get("title", "<no title>")
+            if not isinstance(conversation.get("mapping"), dict):
+                continue #not a valid conversation file, skip it
+            shown_ids = shown_message_ids(conversation)
+            for id, turn in conversation["mapping"].items():
 
-                denested_d = eh.dict_denester(turn)
-                is_hidden = eh.find_item(denested_d, "is_visually_hidden_from_conversation")
-                if is_hidden != "True":
+                if isinstance(turn.get('message'), dict):
+                    content_references = []
+                    if isinstance(turn['message'].get('metadata'), dict):
+                        content_references = json.dumps(turn['message']['metadata'].get('content_references', []))
+                
+                    search_result_groups = []
+                    if isinstance(turn['message'].get('metadata'), dict):
+                        search_result_groups = json.dumps(turn['message']['metadata'].get('search_result_groups', []))
+
+                    message = ""
+                    content_type = ""
+                    if isinstance(turn['message'].get('content'), dict):
+                        content_type = turn['message']['content'].get('content_type', '')
+                        if content_type == 'text':
+                            message = turn['message']['content'].get('parts', '')
+                        elif content_type == 'multimodal_text':
+                            # parts mixes plain strings with dicts (image/audio
+                            # asset pointers, audio transcriptions); keep the text.
+                            parts = turn['message']['content'].get('parts', [])
+                            message = [
+                                part if isinstance(part, str) else part.get('text')
+                                for part in parts
+                                if isinstance(part, (str, dict))
+                            ]
+                        elif content_type == 'thoughts':
+                            message = turn['message']['content'].get('thoughts', {})
+                            message = [thought.get('summary') for thought in message if 'summary' in thought]
+                        elif content_type == 'reasoning_recap':
+                            message = turn['message']['content'].get('content', '')
+                        else:
+                            message = "[Unhandled content type: " + str(content_type) + ']'
+                        if isinstance(message, list):
+                            message = " ".join(part for part in message if isinstance(part, str))
+
+                    denested_d = eh.dict_denester(turn)
                     role = eh.find_item(denested_d, "role")
-                    message = "".join(eh.find_items(denested_d, "part"))
                     model = eh.find_item(denested_d, "-model_slug")
-                    time = eh.epoch_to_iso(eh.find_item(denested_d, "create_time"))
-
+                    reaction_to = eh.find_item(denested_d, "parent")
+                    time = eh.find_item_raw(denested_d, "create_time")
+                    if time is None:
+                        # find_item_raw returns the export's own value (ADR-0042); a
+                        # JSON null (system/tool messages in newer exports) surfaces
+                        # as Python None. Keep the donated cell empty, not None —
+                        # never `find_item_raw(...) or ""`, which would also erase a
+                        # legitimate epoch of 0.
+                        time = ""
                     datapoint = {
                         "conversation title": title,
                         "role": role,
                         "message": message,
+                        "content type": content_type,
                         "model": model,
                         "time": time,
+                        "message id": id,
+                        "reaction to": reaction_to,
+                        "hidden": shown_ids is not None and id not in shown_ids,
+                        "content references": content_references,
+                        "search_result_groups": search_result_groups,
                     }
                     if role != "":
                         datapoints.append(datapoint)
-
+        datapoints = sorted(datapoints, key=lambda d: _time_sort_key(d['time']))
         out = pd.DataFrame(datapoints)
 
     except Exception as e:
         logger.error("Data extraction error: %s", e)
-        
+        errors[type(e).__name__] += 1
+
     return out
 
 
+# ---------------------------------------------------------------------------
+# Extractor registry & platform info
+# ---------------------------------------------------------------------------
 
-def extraction(chatgpt_zip: str) -> list[d3i_props.PropsUIPromptConsentFormTableViz]:
+#: Mapping from the string names used in port_config.json to actual extractor functions.
+EXTRACTOR_REGISTRY: dict[str, Callable[..., pd.DataFrame]] = {
+    "conversations_to_df": conversations_to_df,
+}
+
+
+# ---------------------------------------------------------------------------
+# Main extraction & flow
+# ---------------------------------------------------------------------------
+
+def extraction(chatgpt_zip: SeekableBinaryReader, validation) -> ExtractionResult:
+    """Extract data from a ChatGPT DDP zip and return consent-form tables.
+
+    Parameters
+    ----------
+    chatgpt_zip:
+        Seekable binary reader over the ChatGPT DDP zip — the upload
+        adapter itself, never a path (ADR-0026).
+    validation:
+        Validation result object whose ``archive_members`` attribute is passed
+        to ``ZipArchiveReader``.
     """
-    Add your table definitions below in the list
-    """
-    tables = [
-        d3i_props.PropsUIPromptConsentFormTableViz(
-            id="chatgpt_conversations",
-            data_frame=conversations_to_df(chatgpt_zip),
-            title=props.Translatable({
-                "en": "Your conversations with ChatGPT",
-                "nl": "Uw gesprekken met ChatGPT"
-            }),
-            description=props.Translatable({
-                "en": "In this table you find your conversations with ChatGPT sorted by time. Below, you find a wordcloud, where the size of the words represents how frequent these words have been used in the conversations.", 
-                "nl": "In this table you find your conversations with ChatGPT sorted by time. Below, you find a wordcloud, where the size of the words represents how frequent these words have been used in the conversations.", 
-            }),
-            visualizations=[
-                {
-                    "title": {
-                        "en": "Your messages in a wordcloud", 
-                        "nl": "Your messages in a wordcloud"
-                    },
-                    "type": "wordcloud",
-                    "textColumn": "message",
-                    "tokenize": True,
-                }
-            ]
-        ),
-    ]
-
-    tables_to_render = [table for table in tables if not table.data_frame.empty]
-
-    return tables_to_render
-
+    config = load_port_config(EXTRACTOR_REGISTRY, "chatgpt")
+    errors: Counter = Counter()
+    reader = ZipArchiveReader(chatgpt_zip, validation.archive_members, errors)
+    return run_extraction(reader, errors, config)
 
 
 class ChatGPTFlow(FlowBuilder):
-    def __init__(self, session_id: int):
+    """Flow implementation for the ChatGPT data donation study."""
+
+    def __init__(self, session_id: str):
         super().__init__(session_id, "ChatGPT")
-        
+
     def validate_file(self, file):
         return validate.validate_zip(DDP_CATEGORIES, file)
-        
+
     def extract_data(self, file_value, validation):
-        return extraction(file_value)
+        return extraction(file_value, validation)
 
 
 def process(session_id):

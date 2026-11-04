@@ -1,12 +1,13 @@
-import { 
+import {
     useEffect,
     useLayoutEffect,
     useMemo,
     useRef,
     useState,
-    ReactNode, 
-    Dispatch, 
-    SetStateAction 
+    ReactNode,
+    ReactElement,
+    Dispatch,
+    SetStateAction
 } from 'react'
 import Highlighter from 'react-highlight-words'
 import { 
@@ -16,12 +17,11 @@ import UndoSvg from './assets/images/undo.svg'
 import DeleteSvg from './assets/images/delete.svg'
 import { Pagination } from './pagination'
 import TextBundle from '@eyra/feldspar'
-import { 
-    Translator,
-} from '@eyra/feldspar'
+import { resolveAll } from '../../locale/text'
 import { CheckBox } from "./check_box"
 import { PropsUITableRow } from "./types"
-
+import { resolveDisplayTimezone } from "./visualization_plugin/visualizationDataFunctions/util"
+import { buildCellDisplay } from "./cell_display"
 
 export interface Props {
   table: TableWithContext
@@ -50,7 +50,7 @@ export const Table = ({
   handleDelete,
   handleUndo,
   pageSize = 7
-}: Props): JSX.Element => {
+}: Props): ReactElement => {
   const [page, setPage] = useState(0)
   const columnNames = table.head.cells
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -70,6 +70,7 @@ export const Table = ({
   const cellClass = 'min-h-[2.1rem] md:min-h-[2.5rem] px-3 flex items-center font-table-row'
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- PENDING_ISSUES "lint hygiene" entry 2026-08-26: pagination reset on table swap; fix needs ADR-0031-safe redesign
     setSelected(new Set())
     setPage((page) => Math.max(0, Math.min(page, nPages - 1)))
   }, [table, nPages])
@@ -110,17 +111,34 @@ export const Table = ({
     return items
   }, [table, page, pageSize])
 
-  function renderHeaderCell (value: string, i: number): JSX.Element {
+  // Validated once per declared zone (ADR-0035), not per row: `Intl.DateTimeFormat` throws a
+  // RangeError for a `timeZone` the browser's ICU rejects, and that construction otherwise
+  // happens lazily inside `displayTimestamp` while rendering a cell.
+  const zone = useMemo(() => {
+    const resolved = resolveDisplayTimezone(table.displayTimezone)
+    if (table.displayTimezone !== undefined && resolved !== table.displayTimezone) {
+      console.error(`consent_form_viz: table "${table.id}" has an invalid display_timezone "${table.displayTimezone}", falling back to ${resolved}`)
+    }
+    return resolved
+  }, [table.id, table.displayTimezone])
+  const cellDisplay = useMemo(
+    () => buildCellDisplay({ head: table.head, dateColumns: table.dateColumns, dateLocale: table.dateLocale }, zone, locale),
+    [table.head, table.dateColumns, table.dateLocale, zone, locale]
+  )
+
+  function renderHeaderCell (value: string, i: number): ReactElement {
+    // Display translated header if available, fall back to raw column name
+    const displayName = table.headers?.[value] ?? value
     return (
       <th key={`header ${i}`}>
         <div className={`text-left ${cellClass}`}>
-          <div>{value}</div>
+          <div>{displayName}</div>
         </div>
       </th>
     )
   }
 
-  function renderRow (item: PropsUITableRow | null, i: number): JSX.Element | null {
+  function renderRow (item: PropsUITableRow | null, i: number): ReactElement | null {
     if (item == null && i >= unfilteredRows) return null
     if (item == null) {
       return (
@@ -148,7 +166,7 @@ export const Table = ({
 
         {item.cells.map((cell, j) => (
           <td key={j}>
-            <Cell cell={cell} search={search} cellClass={cellClass} setTooltip={setTooltip} />
+            <Cell cell={cell} display={cellDisplay[j]?.(cell)} search={search} cellClass={cellClass} setTooltip={setTooltip} />
           </td>
         ))}
       </tr>
@@ -236,18 +254,24 @@ export const Table = ({
 
 function Cell ({
   cell,
+  display,
   search,
   cellClass,
   setTooltip
 }: {
   cell: string
+  display?: string | null
   search: string
   cellClass: string
   setTooltip: Dispatch<SetStateAction<Tooltip>>
-}): JSX.Element {
+}): ReactElement {
   const textRef = useRef<HTMLDivElement>(null)
   const [overflows, setOverflows] = useState(false)
   const isUrl = /^https?:\/\//.test(cell)
+  const text = display ?? cell
+  // display is '' for an empty value (an empty cell, not a hoverable raw value) and the
+  // formatted text otherwise; null/undefined means the raw cell is already shown as `text`.
+  const showRawOnHover = display != null && display !== ''
 
   const searchWords = useMemo(() => {
     return [search]
@@ -262,7 +286,7 @@ function Cell ({
   function onSetTooltip (): void {
     if (isUrl) return
     if (textRef.current == null) return
-    if (!overflows) return
+    if (!overflows && !showRawOnHover) return
 
     const rect = textRef.current.getBoundingClientRect()
 
@@ -301,7 +325,7 @@ function Cell ({
               <Highlighter
                 searchWords={searchWords}
                 autoEscape
-                textToHighlight={cell}
+                textToHighlight={text}
                 highlightClassName='bg-tertiary rounded-sm'
               />
             </a>
@@ -310,17 +334,17 @@ function Cell ({
             <Highlighter
               searchWords={searchWords}
               autoEscape
-              textToHighlight={cell}
+              textToHighlight={text}
               highlightClassName='bg-tertiary rounded-sm'
             />
             )}
       </div>
-      {overflows && !isUrl && <TooltipIcon />}
+      {(overflows || showRawOnHover) && !isUrl && <TooltipIcon />}
     </div>
   )
 }
 
-function TooltipIcon (): JSX.Element {
+function TooltipIcon (): ReactElement {
   return (
     <svg
       className='w-3 h-3 mb-1 text-gray-800 dark:text-white'
@@ -347,7 +371,7 @@ function IconButton (props: {
   color: string
   disabled?: boolean
   hidden?: boolean
-}): JSX.Element | null {
+}): ReactElement | null {
   if (props.hidden ?? false) return null
   const disabled = props.disabled ?? false
   return (
@@ -364,14 +388,20 @@ function IconButton (props: {
 }
 
 function getTranslations (locale: string): Record<string, string> {
-  const translated: Record<string, string> = {}
-  for (const [key, value] of Object.entries(translations)) {
-    translated[key] = Translator.translate(value, locale)
-  }
-  return translated
+  return resolveAll(translations, locale)
 }
 
 const translations = {
-  delete: new TextBundle().add('en', 'Delete').add('nl', 'Verwijder'),
-  undo: new TextBundle().add('en', 'Undo').add('nl', 'Herstel')
+  delete: new TextBundle()
+    .add('en', 'Delete')
+    .add('nl', 'Verwijder')
+    .add('de', 'Löschen')
+    .add('it', 'Elimina')
+    .add('es', 'Eliminar'),
+  undo: new TextBundle()
+    .add('en', 'Undo')
+    .add('nl', 'Herstel')
+    .add('de', 'Rückgängig')
+    .add('it', 'Annulla')
+    .add('es', 'Deshacer')
 }
