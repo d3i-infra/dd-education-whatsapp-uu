@@ -12,10 +12,15 @@ onmessage = (event) => {
       });
       break;
 
-    case "firstRunCycle":
-      pyScript = self.pyodide.runPython(`port.start(${event.data.sessionId})`);
+    case "firstRunCycle": {
+      const ctx = event.data.data;
+      // strip null/undefined/"undefined": the JSON text is interpolated as a Python
+      // literal and values must stay strings/numbers (JSON null is not Python)
+      for (const k of Object.keys(ctx)) if (ctx[k] == null || ctx[k] === "undefined") delete ctx[k];
+      pyScript = self.pyodide.runPython(`port.start(${JSON.stringify(ctx)})`);
       runCycle(null);
       break;
+    }
 
     case "nextRunCycle":
       const { response } = event.data;
@@ -31,14 +36,55 @@ onmessage = (event) => {
 
 function runCycle(payload) {
   console.log("[ProcessingWorker] runCycle " + JSON.stringify(payload));
-  scriptEvent = pyScript.send(payload);
-  self.postMessage({
-    eventType: "runCycleDone",
-    scriptEvent: scriptEvent.toJs({
-      create_proxies: false,
-      dict_converter: Object.fromEntries,
-    }),
-  });
+  let scriptEvent;
+  try {
+    scriptEvent = pyScript.send(payload);
+  } catch (error) {
+    // Local diagnostics only — escaped Python errors reach the participant
+    // as a rendered error page (ADR-0022); never posted as error/log events
+    // that would forward unconsented traceback text (ADR-0023).
+    console.error("[ProcessingWorker] Error in pyScript.send:", error);
+    self.postMessage({
+      eventType: "runCycleDone",
+      scriptEvent: generateErrorMessage(String(error)),
+    });
+    return;
+  }
+  try {
+    self.postMessage({
+      eventType: "runCycleDone",
+      scriptEvent: scriptEvent.toJs({
+        create_proxies: false,
+        dict_converter: Object.fromEntries,
+      }),
+    });
+  } catch (error) {
+    console.error("[ProcessingWorker] Error in toJs/postMessage:", error);
+    self.postMessage({
+      eventType: "runCycleDone",
+      scriptEvent: generateErrorMessage(String(error)),
+    });
+  }
+}
+
+function generateErrorMessage(message) {
+  return {
+    __type__: "CommandUIRender",
+    page: {
+      __type__: "PropsUIPageDataSubmission",
+      platform: "error",
+      header: {
+        __type__: "PropsUIHeader",
+        title: { translations: { nl: "Er is iets misgegaan", en: "Something went wrong" } },
+      },
+      body: [
+        {
+          __type__: "PropsUIPageError",
+          message: message,
+        },
+      ],
+    },
+  };
 }
 
 function unwrap(response) {
@@ -51,30 +97,39 @@ function unwrap(response) {
         copyFileToPyFS(response.payload.value, resolve);
         break;
 
+      case "PayloadFiles":
+        resolve({
+          __type__: "PayloadFiles",
+          value: response.payload.value.map(createAsyncFileReader),
+        });
+        break;
+
       default:
         resolve(response.payload);
     }
   });
 }
 
-function copyFileToPyFS(file, resolve) {
-  directoryName = `/file-input`;
-  pathStats = self.pyodide.FS.analyzePath(directoryName);
-  if (!pathStats.exists) {
-    self.pyodide.FS.mkdir(directoryName);
-  } else {
-    self.pyodide.FS.unmount(directoryName);
-  }
-  self.pyodide.FS.mount(
-    self.pyodide.FS.filesystems.WORKERFS,
-    {
-      files: [file],
+function createAsyncFileReader(file) {
+  // Use FileReaderSync for synchronous reading in worker
+  const fileReaderSync = new FileReaderSync();
+
+  return {
+    readSlice: (start, end) => {
+      // Synchronous slice reading
+      const blob = file.slice(start, end);
+      return fileReaderSync.readAsArrayBuffer(blob);
     },
-    directoryName
-  );
+    size: file.size,
+    name: file.name,
+  };
+}
+
+function copyFileToPyFS(file, resolve) {
+  const reader = createAsyncFileReader(file);
   resolve({
-    __type__: "PayloadString",
-    value: directoryName + "/" + file.name,
+    __type__: "PayloadFile",
+    value: reader,
   });
 }
 
@@ -101,7 +156,7 @@ function startPyodide() {
 
 function loadPackages() {
   console.log("[ProcessingWorker] loading packages");
-  return self.pyodide.loadPackage(["micropip", "numpy", "pandas"]);
+  return self.pyodide.loadPackage(["micropip", "numpy", "pandas", "lxml", "cryptography"]);
 }
 
 function installPortPackage() {
