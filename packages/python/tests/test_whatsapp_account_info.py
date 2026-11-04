@@ -98,6 +98,24 @@ class TestAccountSummary:
         assert df.empty
         assert sum(errors.values()) == 1
 
+    def test_invalid_json_is_counted_once(self):
+        reader, errors = make_reader(make_zip({
+            "whatsapp_account_info/contacts.json": "{not json",
+        }))
+        df = wai.account_summary_to_df(reader, errors)
+        assert "Number of contacts" not in as_dict(df)
+        # The reader records the decode failure itself (once per tried encoding);
+        # the extractor must not add an UnexpectedShape on top.
+        assert set(errors) == {"JSONDecodeError"}
+
+    def test_non_dict_registration_info_counts_an_error(self):
+        reader, errors = make_reader(make_zip({
+            "whatsapp_account_info/registration_information.json": {"wa_registration_info": "oops"},
+        }))
+        df = wai.account_summary_to_df(reader, errors)
+        assert "Platform name" not in as_dict(df)
+        assert dict(errors) == {"UnexpectedShape(registration_information.json)": 1}
+
     def test_no_files_gives_empty_frame(self):
         reader, errors = make_reader(make_zip({"other.txt": "x"}))
         assert wai.account_summary_to_df(reader, errors).empty

@@ -66,8 +66,8 @@ def _count_list(reader: ZipArchiveReader, errors: Counter, filename: str, key: s
     """Length of ``data[key]`` in *filename*; None when the file is absent
     (expected, ADR-0024) or has an unexpected shape (counted in *errors*)."""
     result = reader.json(filename)
-    if not result.found:
-        return None
+    if not result.found or not result.data:
+        return None  # absent (ADR-0024) or unreadable: the reader already recorded any decode error
     items = result.data.get(key) if isinstance(result.data, dict) else None
     if not isinstance(items, list):
         errors[f"UnexpectedShape({filename})"] += 1
@@ -78,8 +78,8 @@ def _count_list(reader: ZipArchiveReader, errors: Counter, filename: str, key: s
 def _device_platform(reader: ZipArchiveReader, errors: Counter) -> str | None:
     """``"iphone"`` / ``"android"`` from registration_information.json, else None."""
     result = reader.json("registration_information.json")
-    if not result.found:
-        return None
+    if not result.found or not result.data:
+        return None  # absent (ADR-0024) or unreadable: the reader already recorded any decode error
     info = result.data.get("wa_registration_info") if isinstance(result.data, dict) else None
     if not isinstance(info, dict):
         errors["UnexpectedShape(registration_information.json)"] += 1
