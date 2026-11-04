@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import pytest
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
@@ -15,7 +16,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
 from generate_port_config import build_config  # noqa: E402
 
 import port.helpers.table_extractor as te  # noqa: E402
-from port.api.commands import CommandUIRender  # noqa: E402
+from port.api.commands import CommandSystemDonate, CommandSystemLog, CommandUIRender  # noqa: E402
 from port.api.d3i_props import ExtractionResult  # noqa: E402
 from port.platforms import whatsapp_group_chat_uu as uu  # noqa: E402
 
@@ -156,14 +157,29 @@ class TestFlow:
         gen = make_flow().extract_data(chat_zip(CHAT), None)
         prompt = next(gen)
         assert isinstance(prompt, CommandUIRender)
-        try:
+        with pytest.raises(StopIteration) as stop:
             gen.send(payload("PayloadString", value="Cees"))
-        except StopIteration:
-            pass
+        assert isinstance(stop.value.value, ExtractionResult)
         df = captured["df"]
         assert set(df["name"]) == {f"Member {i}" for i in range(1, 6)}
         assert list(df[df["name"] == "Member 1"]["chat_message"]) == ["Prima 😀😀"]
         assert "en een tweede regel" in df[df["name"] == "Member 5"]["chat_message"].iloc[0]
+
+    def test_unknown_name_returns_no_tables(self):
+        gen = make_flow().extract_data(chat_zip(CHAT), None)
+        next(gen)
+        with pytest.raises(StopIteration) as stop:
+            gen.send(payload("PayloadString", value="Mallory"))
+        assert isinstance(stop.value.value, ExtractionResult)
+        assert stop.value.value.tables == []
+
+    def test_radio_prompt_lists_sorted_members(self):
+        gen = make_flow().extract_data(chat_zip(CHAT), None)
+        cmd = next(gen)
+        page = cmd.toDict()["page"]
+        radios = [b for b in page["body"] if b.get("__type__") == "PropsUIPromptRadioInput"]
+        assert len(radios) == 1
+        assert [item["value"] for item in radios[0]["items"]] == ["Anna", "Bram", "Cees", "Dirk", "Eva"]
 
     def test_extract_data_skip_returns_no_tables(self):
         gen = make_flow().extract_data(chat_zip(CHAT), None)
@@ -175,3 +191,44 @@ class TestFlow:
             result = stop.value
         assert result.tables == []
         assert not result.errors
+
+
+class _Upload(io.BytesIO):
+    """BytesIO with the JS-reported ``size`` the upload safety check reads."""
+
+    @property
+    def size(self):
+        return len(self.getvalue())
+
+
+def _skip_logs(gen, response=None):
+    cmd = gen.send(response)
+    while isinstance(cmd, CommandSystemLog):
+        cmd = gen.send(payload("PayloadVoid"))
+    return cmd
+
+
+def test_full_flow_upload_pick_name_consent_donate(monkeypatch):
+    config = te._build_config(build_config("whatsapp_group_chat_uu"), uu.EXTRACTOR_REGISTRY)
+    monkeypatch.setattr(uu, "load_port_config", lambda registry, platform: config)
+    gen = make_flow().start_flow()
+
+    cmd = next(gen)
+    while isinstance(cmd, CommandSystemLog):
+        cmd = gen.send(payload("PayloadVoid"))
+    assert isinstance(cmd, CommandUIRender)  # file prompt
+
+    upload = _Upload(chat_zip(CHAT).getvalue())
+    cmd = _skip_logs(gen, payload("PayloadFile", value=upload))
+    assert isinstance(cmd, CommandUIRender)
+    assert "PropsUIPromptRadioInput" in str(cmd.toDict())  # name picker
+
+    cmd = _skip_logs(gen, payload("PayloadString", value="Cees"))
+    assert isinstance(cmd, CommandUIRender)
+    rendered = str(cmd.toDict())
+    for table_id in ("whatsapp_uu_group_chat", "whatsapp_uu_emoji_usage", "whatsapp_uu_member_statistics"):
+        assert table_id in rendered
+
+    cmd = _skip_logs(gen, payload("PayloadJSON", value="[]"))
+    assert isinstance(cmd, CommandSystemDonate)
+    assert cmd.key == "sess-whatsapp_group_chat_uu"

@@ -65,7 +65,10 @@ def redact_non_whitespace(text: str) -> str:
 
 
 def members_in_order(df: pd.DataFrame) -> list[str]:
-    """Distinct ``Member N`` names ordered by N."""
+    """Distinct ``Member N`` names ordered by N.
+
+    Expects ``anonymize_users`` output (every name is ``Member N``).
+    """
     return sorted(set(df["name"]), key=lambda name: int(name.rsplit(" ", 1)[-1]))
 
 
@@ -235,7 +238,7 @@ class WhatsAppGroupChatUUFlow(FlowBuilder):
             return validate.BaseValidation(status_code=0)
         return validate.BaseValidation(status_code=1)
 
-    def extract_data(self, file, validation):
+    def extract_data(self, file: SeekableBinaryReader, validation):
         file.seek(0)
         df, users = _parse_members_only(file)
         title = Translatable({"en": "Select your WhatsApp name", "nl": "Kies jouw WhatsApp naam"})
