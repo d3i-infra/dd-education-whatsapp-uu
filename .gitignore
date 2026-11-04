@@ -95,6 +95,9 @@ pytests/scenarios/*PRIVATE.json
 # Config files (keep example configs)
 *_config.json
 !*example_config.json
+# UU course deployment configs (this fork ships them)
+!packages/python/port/configs/whatsapp_account_info_config.json
+!packages/python/port/configs/whatsapp_group_chat_uu_config.json
 
 # Claude Code: track shared settings.json only — local overrides and agent
 # worktrees stay personal

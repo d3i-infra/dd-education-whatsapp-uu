@@ -1,0 +1,46 @@
+{
+  "platform_info": {
+    "name": "WhatsApp account information",
+    "filetypes": [
+      "zip"
+    ],
+    "languages": [
+      "en",
+      "nl"
+    ],
+    "description": "Handles the WhatsApp account information export (zip with JSON/HTML files). Extracts the number of contacts, the number of groups and the device platform (iphone/android).",
+    "time_last_tested": "not yet implemented"
+  },
+  "tables": [
+    {
+      "id": "whatsapp_account_info",
+      "title": {
+        "en": "WhatsApp account information",
+        "nl": "WhatsApp-accountinformatie"
+      },
+      "description": {
+        "en": "In this table you can see: the number of groups you are a part of, the number of contacts you have, and the platform you use WhatsApp on.",
+        "nl": "In deze tabel zie je: het aantal groepen waar je lid van bent, het aantal contacten dat je hebt, en het platform waarop je WhatsApp gebruikt."
+      },
+      "headers": {
+        "Description": {
+          "en": "Description",
+          "nl": "Beschrijving"
+        },
+        "Value": {
+          "en": "Value",
+          "nl": "Waarde"
+        }
+      },
+      "extractor": "account_summary_to_df",
+      "documentation": {
+        "summary": "One row per available statistic about the participant's WhatsApp account: number of contacts, number of groups, and the device platform.",
+        "source_file": "contacts.json, groups.json, registration_information.json",
+        "columns": {
+          "Description": "Name of the statistic.",
+          "Value": "Value of the statistic (a count, or iphone/android for the platform)."
+        }
+      }
+    }
+  ]
+}
