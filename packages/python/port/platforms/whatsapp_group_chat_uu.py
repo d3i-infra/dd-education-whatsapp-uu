@@ -31,7 +31,12 @@ from typing import Callable
 
 import pandas as pd
 
+import port.helpers.port_helpers as ph
+import port.helpers.validate as validate
 from port.api.d3i_props import ExtractionResult
+from port.api.file_utils import SeekableBinaryReader
+from port.api.props import Translatable
+from port.helpers.flow_builder import FlowBuilder
 from port.helpers.table_extractor import load_port_config, run_extraction
 from port.platforms import whatsapp as wa
 
@@ -203,3 +208,46 @@ def extraction(df: pd.DataFrame) -> ExtractionResult:
     """
     config = load_port_config(EXTRACTOR_REGISTRY, PLATFORM_KEY)
     return run_extraction(df, Counter(), config)
+
+
+def _parse_members_only(file: SeekableBinaryReader) -> tuple[pd.DataFrame, list[str]]:
+    """Parse the chat with upstream's parser, keep only detected members."""
+    df = wa.parse_chat(file)
+    if df.empty:
+        return df, []
+    df = wa.remove_empty_chats(df)
+    users = wa.extract_users(df)
+    return wa.keep_users(df, users), users
+
+
+class WhatsAppGroupChatUUFlow(FlowBuilder):
+    def __init__(self, session_id: str):
+        super().__init__(
+            session_id,
+            "WhatsApp group chat",
+            config_key=PLATFORM_KEY,
+            donation_key=PLATFORM_KEY,
+        )
+
+    def validate_file(self, file: SeekableBinaryReader) -> validate.BaseValidation:
+        df, users = _parse_members_only(file)
+        if not df.empty and len(users) > MIN_MEMBERS_EXCLUSIVE:
+            return validate.BaseValidation(status_code=0)
+        return validate.BaseValidation(status_code=1)
+
+    def extract_data(self, file, validation):
+        file.seek(0)
+        df, users = _parse_members_only(file)
+        title = Translatable({"en": "Select your WhatsApp name", "nl": "Kies jouw WhatsApp naam"})
+        empty_text = Translatable({"en": "", "nl": ""})
+        radio_prompt = ph.generate_radio_prompt(title, empty_text, sorted(users))
+        selection = yield ph.render_page(empty_text, radio_prompt)
+        if getattr(selection, "__type__", None) != "PayloadString" or selection.value not in users:
+            return ExtractionResult(tables=[], errors=Counter())
+        df = anonymize_users(df, users, selection.value)
+        return extraction(df)
+
+
+def process(session_id: str):
+    flow = WhatsAppGroupChatUUFlow(session_id)
+    return flow.start_flow()

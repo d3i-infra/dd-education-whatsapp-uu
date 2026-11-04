@@ -4,6 +4,7 @@ import sys
 import zipfile
 from collections import Counter
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -14,6 +15,8 @@ if str(_SCRIPTS_DIR) not in sys.path:
 from generate_port_config import build_config  # noqa: E402
 
 import port.helpers.table_extractor as te  # noqa: E402
+from port.api.commands import CommandUIRender  # noqa: E402
+from port.api.d3i_props import ExtractionResult  # noqa: E402
 from port.platforms import whatsapp_group_chat_uu as uu  # noqa: E402
 
 
@@ -110,3 +113,65 @@ def test_extraction_produces_three_config_driven_tables(monkeypatch):
     assert ids == ["whatsapp_uu_group_chat", "whatsapp_uu_emoji_usage", "whatsapp_uu_member_statistics"]
     chat = result.tables[0]
     assert chat.date_columns == {"Timestamp": {"encoding": "iso-8601"}}
+
+
+def make_flow():
+    with patch("port.helpers.flow_builder.load_public_key_pem", return_value=None), \
+         patch("port.helpers.flow_builder.load_reference_timezone", return_value=None):
+        return uu.WhatsAppGroupChatUUFlow("sess")
+
+
+def payload(type_name, **attrs):
+    p = MagicMock()
+    p.__type__ = type_name
+    for k, v in attrs.items():
+        setattr(p, k, v)
+    return p
+
+
+class TestFlow:
+    def test_names_and_keys(self):
+        flow = make_flow()
+        assert flow.platform_name == "WhatsApp group chat"
+        assert flow.donation_key == "whatsapp_group_chat_uu"
+
+    def test_validate_accepts_more_than_three_members(self):
+        assert make_flow().validate_file(chat_zip(CHAT)).get_status_code_id() == 0
+
+    def test_validate_rejects_three_members(self):
+        three = [line for line in CHAT if " - Dirk:" not in line and " - Eva:" not in line]
+        assert make_flow().validate_file(chat_zip(three)).get_status_code_id() == 1
+
+    def test_validate_rejects_non_chat(self):
+        assert make_flow().validate_file(chat_zip(["just some text"])).get_status_code_id() == 1
+
+    def test_extract_data_asks_name_then_anonymises(self, monkeypatch):
+        captured = {}
+
+        def fake_extraction(df):
+            captured["df"] = df
+            return ExtractionResult(tables=[], errors=Counter())
+
+        monkeypatch.setattr(uu, "extraction", fake_extraction)
+        gen = make_flow().extract_data(chat_zip(CHAT), None)
+        prompt = next(gen)
+        assert isinstance(prompt, CommandUIRender)
+        try:
+            gen.send(payload("PayloadString", value="Cees"))
+        except StopIteration:
+            pass
+        df = captured["df"]
+        assert set(df["name"]) == {f"Member {i}" for i in range(1, 6)}
+        assert list(df[df["name"] == "Member 1"]["chat_message"]) == ["Prima 😀😀"]
+        assert "en een tweede regel" in df[df["name"] == "Member 5"]["chat_message"].iloc[0]
+
+    def test_extract_data_skip_returns_no_tables(self):
+        gen = make_flow().extract_data(chat_zip(CHAT), None)
+        next(gen)
+        try:
+            gen.send(payload("PayloadFalse"))
+            raise AssertionError("generator should have returned")
+        except StopIteration as stop:
+            result = stop.value
+        assert result.tables == []
+        assert not result.errors
