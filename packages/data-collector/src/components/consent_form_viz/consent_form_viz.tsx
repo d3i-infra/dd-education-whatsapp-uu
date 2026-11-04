@@ -1,35 +1,36 @@
 import {
-  LabelButton,
-  PrimaryButton,
+  DonateButtons,
   BodyLarge,
-  Translator,
   ReactFactoryContext,
 } from "@eyra/feldspar"
 import TextBundle from "@eyra/feldspar"
-import { 
+import { resolveText } from "../../locale/text"
+import {
     TableWithContext,
-    TableContext,
-    PropsUITable,
-    PropsUITableBody,
-    PropsUITableHead,
     PropsUIPromptConsentFormViz,
-    PropsUIPromptConsentFormTableViz,
     PropsUITableRow,
+    PropsUITableHead,
 } from "./types"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState, ReactElement } from "react"
 import _ from "lodash"
 import { TableContainer } from "./table_container"
+import { parseTables } from "./parse_table"
 
 type Props = PropsUIPromptConsentFormViz & ReactFactoryContext
 
-export const ConsentFormViz = (props: Props): JSX.Element => {
-  const [tables, setTables] = useState<TableWithContext[]>(() => parseTables(props.tables))
+export const ConsentFormViz = (props: Props): ReactElement => {
+  const [tables, setTables] = useState<TableWithContext[]>(() => parseTables(props.tables, props.locale))
   const { locale, resolve } = props
-  const { description, donateQuestion, donateButton, cancelButton } = prepareCopy(props)
-  const [isDonating, setIsDonating] = useState(false)
+  const { description } = prepareCopy(props)
+  // The state initializer above already parsed props.tables; only re-parse
+  // when the host actually sends new tables (issue #122 double parse).
+  const parsedTables = useRef(props.tables)
 
   useEffect(() => {
-    setTables(parseTables(props.tables))
+    if (parsedTables.current === props.tables) return
+    parsedTables.current = props.tables
+    setTables(parseTables(props.tables, props.locale))
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- PENDING_ISSUES "lint hygiene" entry 2026-08-26: consent_form_viz re-parse effect intentionally omits `props.locale` from deps; the effect's ref-comparison guard (not this array) enforces ADR-0031's parse-once contract (issue #122 double parse) and only ever fires on a new `props.tables` identity.
   }, [props.tables])
 
   const updateTable = useCallback((tableId: string, table: TableWithContext) => {
@@ -43,76 +44,7 @@ export const ConsentFormViz = (props: Props): JSX.Element => {
     })
   }, [])
 
-  function rowCell(dataFrame: any, column: string, row: number): string {
-    const text = String(dataFrame[column][`${row}`])
-    return text
-  }
-
-  function columnNames(dataFrame: any): string[] {
-    return Object.keys(dataFrame)
-  }
-
-  function columnCount(dataFrame: any): number {
-    return columnNames(dataFrame).length
-  }
-
-  function rowCount(dataFrame: any): number {
-    if (columnCount(dataFrame) === 0) {
-      return 0
-    } else {
-      const firstColumn = dataFrame[columnNames(dataFrame)[0]]
-      return Object.keys(firstColumn).length - 1
-    }
-  }
-
-  function rows(data: any): PropsUITableRow[] {
-    const result: PropsUITableRow[] = []
-    const n = rowCount(data)
-    for (let row = 0; row <= n; row++) {
-      const id = `${row}`
-      const cells = columnNames(data).map((column: string) => rowCell(data, column, row))
-      result.push({ id, cells })
-    }
-    return result
-  }
-
-  function parseTables(tablesData: PropsUIPromptConsentFormTableViz[]): Array<PropsUITable & TableContext> {
-    return tablesData.map((table) => parseTable(table))
-  }
-
-  function parseTable(tableData: PropsUIPromptConsentFormTableViz): PropsUITable & TableContext {
-    const id = tableData.id
-    const title = Translator.translate(tableData.title, props.locale)
-    const description =
-      tableData.description !== undefined ? Translator.translate(tableData.description, props.locale) : ""
-    const deletedRowCount = 0
-    const dataFrame = loadDataFrame(tableData.data_frame)
-    const headCells = columnNames(dataFrame).map((column: string) => column)
-    const head: PropsUITableHead = {
-      cells: headCells,
-    }
-    const body: PropsUITableBody = {
-      rows: rows(dataFrame),
-    }
-    return {
-      __type__: "PropsUITable",
-      id,
-      head,
-      body,
-      title,
-      description,
-      deletedRowCount,
-      annotations: [],
-      originalBody: body,
-      deletedRows: [],
-      visualizations: tableData.visualizations,
-      folded: tableData.folded || false,
-      deleteOption: tableData.delete_option,
-    }
-  }
-
   function handleDonate(): void {
-    setIsDonating(true)
     const value = serializeConsentData()
     resolve?.({ __type__: "PayloadJSON", "value": value })
   }
@@ -131,9 +63,9 @@ export const ConsentFormViz = (props: Props): JSX.Element => {
   }
 
 
-  function serializeTable({ id, head, body: { rows } }: PropsUITable): any {
+  function serializeTable({ id, head, body: { rows }, deletedRowCount }: TableWithContext): any {
     const data = rows.map((row) => serializeRow(row, head))
-    return { [id]: data }
+    return { [id]: data, "deleted row count": deletedRowCount.toString() }
   }
 
   function serializeRow(row: PropsUITableRow, head: PropsUITableHead): any {
@@ -157,19 +89,13 @@ export const ConsentFormViz = (props: Props): JSX.Element => {
             )
           })}
         </div>
-        <div>
-          <BodyLarge margin="" text={donateQuestion} />
-
-          <div className="flex flex-row gap-4 mt-4 mb-4">
-            <PrimaryButton
-              label={donateButton}
-              onClick={handleDonate}
-              color="bg-success text-white"
-              spinning={isDonating}
-            />
-            <LabelButton label={cancelButton} onClick={handleCancel} color="text-grey1" />
-          </div>
-        </div>
+        <DonateButtons
+          onDonate={handleDonate}
+          onCancel={handleCancel}
+          locale={locale}
+          donateQuestion={props.donateQuestion ?? defaultDonateQuestionLabel}
+          donateButton={props.donateButton ?? defaultDonateButtonLabel}
+        />
       </div>
     </>
   )
@@ -177,44 +103,32 @@ export const ConsentFormViz = (props: Props): JSX.Element => {
 
 interface Copy {
   description: string
-  donateQuestion: string
-  donateButton: string
-  cancelButton: string
 }
 
-function prepareCopy({ donateQuestion, donateButton, description, locale }: Props): Copy {
+function prepareCopy({ description, locale }: Props): Copy {
   return {
-    description: Translator.translate(description ?? defaultDescription, locale),
-    donateQuestion: Translator.translate(donateQuestion ?? defaultDonateQuestionLabel, locale),
-    donateButton: Translator.translate(donateButton ?? defaultDonateButtonLabel, locale),
-    cancelButton: Translator.translate(defaultCancelButtonLabel, locale),
+    description: resolveText(description ?? defaultDescription, locale),
   }
-}
-
-function loadDataFrame(dataFrame: any) {
-  if (typeof dataFrame === "string") {
-      return JSON.parse(dataFrame)
-  } 
-  return dataFrame;
 }
 
 const defaultDonateQuestionLabel = new TextBundle()
   .add('en', 'Do you want to share the above data?')
   .add('de', 'Möchten Sie die oben genannten Daten teilen?')
   .add('nl', 'Wilt u de bovenstaande gegevens delen?')
+  .add('it', 'Vuole condividere i dati sopra riportati?')
+  .add('es', '¿Desea compartir los datos anteriores?')
 
 const defaultDonateButtonLabel = new TextBundle()
   .add('en', 'Yes, share for research')
   .add('de', 'Ja, für Forschung teilen')
   .add('nl', 'Ja, deel voor onderzoek')
-
-const defaultCancelButtonLabel = new TextBundle()
-  .add('en', 'No')
-  .add('de', 'Nein')
-  .add('nl', 'Nee')
+  .add('it', 'Sì, condividi per la ricerca')
+  .add('es', 'Sí, compartir para la investigación')
 
 const defaultDescription = new TextBundle()
   .add('en', 'Determine whether you would like to share the data below. Carefully check the data and adjust when required. With your contribution, you help the previously described research. Thank you in advance.')
   .add('de', 'Legen Sie fest, ob Sie die untenstehenden Daten teilen möchten. Überprüfen Sie die Daten sorgfältig und passen Sie sie bei Bedarf an. Mit Ihrem Beitrag helfen Sie der zuvor beschriebenen Forschung. Vielen Dank im Voraus.')
   .add('nl', 'Bepaal of u de onderstaande gegevens wilt delen. Bekijk de gegevens zorgvuldig en pas zo nodig aan. Met uw bijdrage helpt u het eerder beschreven onderzoek. Alvast hartelijk dank.')
+  .add('it', 'Decida se desidera condividere i dati riportati di seguito. Controlli attentamente i dati e li modifichi se necessario. Con il suo contributo aiuta la ricerca descritta in precedenza. Grazie in anticipo.')
+  .add('es', 'Decida si desea compartir los datos que aparecen a continuación. Revise los datos con atención y modifíquelos si es necesario. Con su contribución ayuda a la investigación descrita anteriormente. Muchas gracias de antemano.')
 

@@ -9,17 +9,68 @@ import { z } from "zod"
 // duplicating the types here. Currently opting for duplication to avoid complexity
 // (and if input format changes, the plugin would break regardless)
 
-export const zTranslatable = z.record(z.string())
+// Permissive by design: any locale key is accepted here. Strictness belongs at
+// the researcher-facing gates (where a bad config should be reported), not at
+// the participant's render path — here the runtime defense is the resolver
+// sentinel from src/locale/text.ts, which returns '?text?' instead of throwing.
+export const zTranslatable = z.record(z.string(), z.string())
 export type Translatable = z.infer<typeof zTranslatable>
 
 export const zLabel = z.union([zTranslatable, z.string()])
 export type Label = z.infer<typeof zLabel>
 
-// Table type, but only taking what we need
+// Table type, but only taking what we need.
+// body.rows is validated in place via z.custom and passed through BY REFERENCE:
+// zod's normal array/object schemas reconstruct (deep-clone) their output, which
+// for a 65k-row table retained one full copy per figure for the page lifetime
+// (issue #122). The custom predicate keeps zod as the validation gate with zero
+// row allocations. Trade-off: a validation failure yields one custom issue, not
+// zod's per-path nested errors.
+// zTableRow is the shape's source of truth; isRowArray is its zero-allocation
+// implementation (conformance-tested).
+export const zTableRow = z.object({ id: z.string(), cells: z.array(z.string()) })
+export type TableRow = z.infer<typeof zTableRow>
+
+export function isRowArray (rows: unknown): rows is TableRow[] {
+  return (
+    Array.isArray(rows) &&
+    rows.every(
+      (row) =>
+        row != null &&
+        typeof (row as TableRow).id === 'string' &&
+        Array.isArray((row as TableRow).cells) &&
+        (row as TableRow).cells.every((cell) => typeof cell === 'string')
+    )
+  )
+}
+
+// Encodings the front end's interpretTimestamp knows (ADR-0043). Keep in step with
+// DATE_ENCODINGS in packages/python/port/helpers/port_config_validator.py.
+export const zDateEncoding = z.enum(['epoch-seconds', 'epoch-micros', 'iso-8601', 'tiktok', 'takeout-html', 'meta-html'])
+export type DateEncoding = z.infer<typeof zDateEncoding>
+
+// A non-empty encoding list is an invariant of DateColumnSpec, not a fact `interpretTimestamp`
+// re-derives on every cell: the `.transform` normalises a single encoding into a one-element
+// array once, at the schema boundary (one parse per table — ADR-0035), so the inferred type is
+// honest and callers never construct a spec value by hand (final review; ts-idiom T9/T49). The
+// output type is a non-empty tuple (`readonly [DateEncoding, ...DateEncoding[]]`), not just
+// `readonly DateEncoding[]`, so `{ encoding: [] }` is a type error, not merely a schema
+// rejection the type system stays silent about (ts-fix2-review: T9/T36).
+export const zDateColumnSpec = z.object({
+  encoding: z.union([zDateEncoding, z.array(zDateEncoding).nonempty()])
+    .transform((encoding): readonly [DateEncoding, ...DateEncoding[]] =>
+      Object.freeze(Array.isArray(encoding) ? encoding : [encoding])),
+  utcOffsetMinutes: z.number().int().optional()
+})
+export type DateColumnSpec = z.infer<typeof zDateColumnSpec>
+
 export const zTable = z.object({
   id: z.string(),
   head: z.object({ cells: z.array(z.string()) }),
-  body: z.object({ rows: z.array(z.object({ id: z.string(), cells: z.array(z.string()) })) }),
+  body: z.object({ rows: z.custom<TableRow[]>(isRowArray, { message: 'body.rows must be an array of { id: string, cells: string[] }' }) }),
+  dateColumns: z.record(zDateColumnSpec).optional(),
+  dateLocale: z.string().optional(),
+  displayTimezone: z.string().optional(),
 })
 export type Table = z.infer<typeof zTable>
 
@@ -82,13 +133,11 @@ export const zAggregationValue = z.object({
 })
 export type AggregationValue = z.infer<typeof zAggregationValue>
 
-export const zChartVisualization = zVisualizationProps.merge(
-  z.object({
-    type: zChartVisualizationType,
-    group: zAggregationGroup,
-    values: z.array(zAggregationValue),
-  })
-)
+export const zChartVisualization = zVisualizationProps.extend({
+  type: zChartVisualizationType,
+  group: zAggregationGroup,
+  values: z.array(zAggregationValue),
+})
 export type ChartVisualization = z.infer<typeof zChartVisualization>
 
 // Internal types
@@ -107,21 +156,20 @@ export interface ChartVisualizationData {
   xKey: string
   xLabel: string | Translatable | undefined
   yKeys: Record<string, AxisSettings>
+  unplotted: number
 }
 
 // Text Visualizations
 
 // External types (need schema)
 
-export const zTextVisualization = zVisualizationProps.merge(
-  z.object({
-    type: zTextVisualizationType,
-    textColumn: z.string(),
-    valueColumn: z.string().optional(),
-    tokenize: z.boolean().optional(),
-    extract: z.enum(["url_domain"]).optional(),
-  })
-)
+export const zTextVisualization = zVisualizationProps.extend({
+  type: zTextVisualizationType,
+  textColumn: z.string(),
+  valueColumn: z.string().optional(),
+  tokenize: z.boolean().optional(),
+  extract: z.enum(["url_domain"]).optional(),
+})
 export type TextVisualization = z.infer<typeof zTextVisualization>
 
 // Internal types

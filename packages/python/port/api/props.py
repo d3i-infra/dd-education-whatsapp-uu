@@ -1,26 +1,64 @@
 from dataclasses import dataclass
-from typing import Optional, TypedDict, Union, Any
+from typing import NotRequired, Optional, TypedDict, Union, Any
 
 import pandas as pd
 
 
 class Translations(TypedDict):
-    """Typed dict containing text that is  display in a speficic language
+    """Typed dict containing text displayed in a specific language.
+
+    en and nl are required. Additional languages are optional.
+    The feldspar Translator falls back gracefully for missing locales.
 
     Attributes:
         en: English string to display
         nl: Dutch string to display
+        de: German string to display (optional)
+        it: Italian string to display (optional)
+        es: Spanish string to display (optional)
     """
 
     en: str
     nl: str
+    de: NotRequired[str]
+    it: NotRequired[str]
+    es: NotRequired[str]
 
 
 @dataclass
 class Translatable:
-    """Wrapper class for Translations"""
+    """Wrapper class for Translations.
+
+    A data carrier only: Python never resolves text, the feldspar renderer does.
+    The constructor guards the entry point so a wrong shape fails here rather
+    than surfacing to a participant as unusable text. Empty strings are allowed
+    — an empty translation is a deliberate "render nothing", not a missing one.
+
+    Which locales a bundle must carry is deliberately not checked here: platform
+    modules build partial bundles legitimately, and locale coverage is a
+    researcher-facing gate.
+    """
 
     translations: Translations
+
+    def __post_init__(self):
+        if not isinstance(self.translations, dict):
+            raise TypeError(
+                "Translatable expects a dict of locale code to text, e.g. "
+                '{"en": "Hello", "nl": "Hallo"}; got '
+                f"{type(self.translations).__name__}"
+            )
+        for locale, text in self.translations.items():
+            if not isinstance(locale, str):
+                raise TypeError(
+                    "Translatable locale keys must be strings, e.g. "
+                    f'"en"; got {type(locale).__name__} ({locale!r})'
+                )
+            if not isinstance(text, str):
+                raise TypeError(
+                    f'Translatable text for locale "{locale}" must be a string; '
+                    f"got {type(text).__name__}"
+                )
 
     def toDict(self):
         return self.__dict__.copy()
@@ -75,14 +113,15 @@ class PropsUIPromptConfirm:
 
     text: Translatable
     ok: Translatable
-    cancel: Translatable
+    cancel: Optional[Translatable] = None
 
     def toDict(self):
         dict = {}
         dict["__type__"] = "PropsUIPromptConfirm"
         dict["text"] = self.text.toDict()
         dict["ok"] = self.ok.toDict()
-        dict["cancel"] = self.cancel.toDict()
+        if self.cancel is not None:
+            dict["cancel"] = self.cancel.toDict()
         return dict
 
 
@@ -90,12 +129,16 @@ class PropsUIPromptConfirm:
 class PropsUIPromptConsentFormTable:
     """Table to be shown to the participant prior to data_submission
 
+    It is truncated to a maximum number of rows to avoid overloading the UI.
+
     Attributes:
         id: a unique string to itentify the table after donation
         number: the number of table in the list of tables
         title: title of the table
         description: description of the table
         data_frame: table to be shown
+        data_frame_max_size: maximum size of the table (in rows)
+        headers: optional headers for the table columns
     """
 
     id: str
@@ -103,7 +146,14 @@ class PropsUIPromptConsentFormTable:
     title: Translatable
     description: Translatable
     data_frame: pd.DataFrame
+    data_frame_max_size: int = 10000
     headers: Optional[dict[str, Translatable]] = None
+
+    def __post_init__(self):
+        if self.data_frame_max_size < 1:
+            self.data_frame_max_size = 1
+        if len(self.data_frame) > self.data_frame_max_size:
+            self.data_frame = self.data_frame.head(self.data_frame_max_size).reset_index(drop=True)
 
     def toDict(self):
         dict = {}
@@ -114,9 +164,7 @@ class PropsUIPromptConsentFormTable:
         dict["description"] = self.description.toDict()
         dict["data_frame"] = self.data_frame.to_json()
         if self.headers:
-            dict["headers"] = {
-                key: value.toDict() for key, value in self.headers.items()
-            }
+            dict["headers"] = {key: value.toDict() for key, value in self.headers.items()}
         return dict
 
 
@@ -245,7 +293,7 @@ class PropsUIPromptHelloWorld:
     def toDict(self):
         dict = {}
         dict["__type__"] = "PropsUIPromptHelloWorld"
-        dict["text"] = self.text
+        dict["text"] = self.text.toDict()
         return dict
 
 
@@ -329,10 +377,14 @@ class PropsUIPageDataSubmission:
         return dict
 
 
-class PropsUIPageEnd:
-    """An ending page to show the user they are done"""
+@dataclass
+class PropsUIPageError:
+    """An error page to show when something goes wrong"""
+
+    message: str
 
     def toDict(self):
         dict = {}
-        dict["__type__"] = "PropsUIPageEnd"
+        dict["__type__"] = "PropsUIPageError"
+        dict["message"] = self.message
         return dict

@@ -1,5 +1,6 @@
-from dataclasses import dataclass
-from typing import Optional
+from collections import Counter
+from dataclasses import dataclass, field
+from typing import Any, Optional
 
 import pandas as pd
 
@@ -18,6 +19,9 @@ class PropsUIPromptConsentFormTableViz:
         visualizations (Optional[list]): Optional visualizations to be shown.
         folded (Optional[bool]): Whether the table should be initially folded.
         delete_option (Optional[bool]): Whether to show a delete option for the table.
+        date_columns (Optional[dict]): Per date column, how the raw value is encoded (ADR-0043)
+        date_locale (Optional[str]): BCP 47 locale the export rendered its dates in (Google, YouTube)
+        display_timezone (Optional[str]): IANA zone the consent page displays and buckets in
 
     Examples::
 
@@ -26,10 +30,13 @@ class PropsUIPromptConsentFormTableViz:
             {"column1": 2, "column2": 5},
             {"column1": 3, "column2": 6},
         ])
-        
-        example1 = PropsUIPromptConsentFormTable(
+
+        example1 = PropsUIPromptConsentFormTableViz(
             id="example1",
-            title=Translatable("Table as DataFrame"),
+            title=props.Translatable({
+                "en": "Table as DataFrame",
+                "nl": "Tabel als DataFrame",
+            }),
             data_frame=data_frame_df,
         )
 
@@ -38,10 +45,13 @@ class PropsUIPromptConsentFormTableViz:
             "column2": {"0": 2, "1": 5},
             "column3": {"0": 3, "1": 6},
         }
-        
-        example2 = PropsUIPromptConsentFormTable(
+
+        example2 = PropsUIPromptConsentFormTableViz(
             id="example2",
-            title=Translatable("Table as Dictionary"),
+            title=props.Translatable({
+                "en": "Table as Dictionary",
+                "nl": "Tabel als woordenboek",
+            }),
             data_frame=data_frame_dict,
         )
     """
@@ -50,8 +60,12 @@ class PropsUIPromptConsentFormTableViz:
     data_frame: pd.DataFrame
     description: Optional[props.Translatable] = None
     visualizations: Optional[list] = None
+    headers: Optional[dict[str, props.Translatable]] = None
     folded: Optional[bool] = False
     delete_option: Optional[bool] = True
+    date_columns: Optional[dict[str, dict[str, Any]]] = None
+    date_locale: Optional[str] = None
+    display_timezone: Optional[str] = None
 
     def translate_data_frame(self):
         if isinstance(self.data_frame, pd.DataFrame):
@@ -73,8 +87,16 @@ class PropsUIPromptConsentFormTableViz:
         dict["data_frame"] = self.translate_data_frame()
         dict["description"] = self.description.toDict() if self.description else None
         dict["visualizations"] = self.visualizations if self.visualizations else None
+        if self.headers:
+            dict["headers"] = {key: value.toDict() for key, value in self.headers.items()}
         dict["folded"] = self.folded
         dict["delete_option"] = self.delete_option
+        if self.date_columns:
+            dict["date_columns"] = self.date_columns
+        if self.date_locale:
+            dict["date_locale"] = self.date_locale
+        if self.display_timezone:
+            dict["display_timezone"] = self.display_timezone
         return dict
 
 
@@ -131,9 +153,13 @@ class PropsUIPromptFileInputMultiple:
     Attributes:
         description (Translatable): Text with an explanation.
         extensions (str): Accepted mime types, example: "application/zip, text/plain".
+        example (Optional[Translatable]): Optional example placeholder text (e.g. sample
+            filenames) shown in the file list before any file is selected. When absent,
+            the component falls back to its own built-in per-locale placeholder copy.
     """
     description: props.Translatable
     extensions: str
+    example: Optional[props.Translatable] = None
 
     def toDict(self):
         """
@@ -146,6 +172,8 @@ class PropsUIPromptFileInputMultiple:
         dict["__type__"] = "PropsUIPromptFileInputMultiple"
         dict["description"] = self.description.toDict()
         dict["extensions"] = self.extensions
+        if self.example is not None:
+            dict["example"] = self.example.toDict()
         return dict
 
 
@@ -262,3 +290,38 @@ class PropsUIPromptQuestionnaire:
         dict["description"] = self.description.toDict()
         dict["questions"] = [q.toDict() for q in self.questions]
         return dict
+
+
+@dataclass
+class PropsUIPromptRetry:
+    """Retry submitting a file page
+
+    Prompt the user if they want to submit a new file.
+    This can be used in case a file could not be processed.
+
+    Attributes:
+        text: message to display
+        ok: message to display if the user wants to try again
+    """
+
+    text: props.Translatable
+    ok: props.Translatable
+
+    def toDict(self):
+        dict = {}
+        dict["__type__"] = "PropsUIPromptRetry"
+        dict["text"] = self.text.toDict()
+        dict["ok"] = self.ok.toDict()
+        return dict
+
+
+@dataclass
+class ExtractionResult:
+    """Result of a platform extraction: tables for consent + aggregated error counts.
+
+    The errors Counter contains type-name keys (e.g. Counter({"FileNotFoundInZipError": 3})).
+    These counts are safe to forward via the bridge logger. Raw exception messages
+    are never included — they stay in local __name__ logger output only.
+    """
+    tables: list[PropsUIPromptConsentFormTableViz]
+    errors: Counter = field(default_factory=Counter)

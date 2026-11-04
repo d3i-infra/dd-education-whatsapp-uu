@@ -1,24 +1,17 @@
 Platform Documentation
 =============================
 
-For various platforms we provide default extraction scripts, so you do not have to reinvent the wheel.
+For various platforms we provide default extraction scripts built on the **FlowBuilder** pattern,
+so you do not have to reinvent the wheel.
 
-Feel free to use the extraction scripts however you see fit.
+Each platform module in ``packages/python/port/platforms/`` contains a ``FlowBuilder`` subclass
+that handles the full donation flow (file prompt, validation, extraction, consent, donation)
+and a ``process()`` function that ``script.py`` calls via ``yield from``.
 
-In order to use the scripts open the file ``packages/python/port/main.py`` and change this line:
-
-.. code-block:: python
-
-    from port.script import process
-
-to:
-
-.. code-block:: python
-
-    #from port.script import process
-
-    # Change to (in this case the standard script for instagram will be used):
-    from port.platforms.instagram import process
+Each build targets exactly one platform: set the ``VITE_PLATFORM`` environment
+variable to the platform name, both for local development (``pnpm start``) and
+for release builds (``release.sh`` builds one bundle per config in
+``configs/*_config.json``).
 
 Available platforms
 -------------------
@@ -26,6 +19,8 @@ Available platforms
 Currently we have default scripts for the following platforms:
 
 * ChatGPT
+* Chrome
+* Google
 * Instagram
 * Facebook
 * LinkedIn

@@ -5,9 +5,26 @@ This module contains an example flow of a WhatsApp Group Chat data donation stud
 
 Assumptions:
 It handles DDPs containing a group chat. This extraction is not perfect because the text file containg the group chat does not follow a structure, however it performs well enough.
+
+Note: WhatsApp DDPs are plain-text chat exports rather than structured JSON/CSV
+archives.  The extraction pipeline parses the chat file into a DataFrame before
+any per-table function runs, so these functions cannot conform to the standard
+``(reader: ZipArchiveReader, errors: Counter) -> pd.DataFrame`` extractor
+signature used by other platforms.  Accordingly, WhatsApp does not use
+``EXTRACTOR_REGISTRY`` or ``run_extraction``.
+
+Platform info::
+
+    {
+        "name": "WhatsApp Group Chat",
+        "filetypes": ["txt", "zip"],
+        "languages": ["en", "nl"],
+        "description": "Handles WhatsApp group chat exports in plain-text format. Multiple date/time formats and locales are supported. These data donation flows have not been tested yet, if you find anything wrong with them report to datadonation@uu.nl and they will be fixed!",
+        "time_last_tested": "not yet implemented"
+    }
 """
 
-from typing import Tuple, TypedDict
+from typing import Callable, Tuple, TypedDict
 from collections import Counter
 from dateutil import parser
 import unicodedata
@@ -17,11 +34,10 @@ import re
 
 import pandas as pd
 
-import port.api.props as props
-import port.api.d3i_props as d3i_props
+from port.api.d3i_props import ExtractionResult
+from port.api.file_utils import SeekableBinaryReader
 import port.helpers.validate as validate
-import port.helpers.port_helpers as ph
-from port.platforms.flow_builder import FlowBuilder
+from port.helpers.flow_builder import FlowBuilder
 from port.helpers.emoji_pattern import EMOJI_PATTERN
 
 logger = logging.getLogger(__name__)
@@ -57,6 +73,10 @@ SIMPLIFIED_REGEXES = [
     r"^\[%m.%d.%y, %H:%M:%S\] %name: %chat_message$",
     r"^\[%m.%d.%y %H:%M:%S\] %name: %chat_message$",
     r"^%m/%d/%y, %H:%M - %name: %chat_message$",
+    r"^%d-%m-%y %H:%M %DAYPART - %name: %chat_message$",
+    r"^%d/%m/%y %H:%M %DAYPART - %name: %chat_message$",
+    r"^\[%d-%m-%y %H:%M:%S %DAYPART\] %name: %chat_message$",
+    r"^\[%d/%m/%y %H:%M:%S %DAYPART\] %name: %chat_message$",
     r"^(?P<year>.*?)(?:\] | - )%name: %chat_message$"  # Fallback catch all regex
 ]
 
@@ -72,6 +92,7 @@ REGEX_CODES = {
     "%S": r"(?P<seconds>\d{2})",
     "%P": r"(?P<ampm>[AaPp].? ?[Mm].?)",
     "%p": r"(?P<ampm>[AaPp].? ?[Mm].?)",
+    "%DAYPART": r"(?P<daypart>[’']s (?:ochtends|middags|avonds|nachts))",
     "%name": r"(?P<name>[^:]*)",
     "%chat_message": r"(?P<chat_message>.*)"
 }
@@ -101,15 +122,6 @@ def generate_regexes(simplified_regexes):
 REGEXES =  generate_regexes(SIMPLIFIED_REGEXES)
 
 
-def anonymize_users(df: pd.DataFrame, list_with_users: list[str], user_name: str) -> pd.DataFrame:
-    users_not_you = list(set(list_with_users) - set([user_name]))
-    mapping = {user_name : f"Member {i+2}" for i, user_name in enumerate(users_not_you)}
-    mapping[user_name] = "Member 1"
-
-    df['name'] = df['name'].replace(mapping)
-    return df
-
-
 def remove_unwanted_characters(s: str) -> str:
     """
     Cleans string from bytes using magic
@@ -129,6 +141,26 @@ def convert_to_iso8601(timestamp):
         return timestamp
 
 
+def to_24h(hour: int, ampm: str | None, daypart: str | None) -> int:
+    """Fold a 12-hour clock into 24h using an AM/PM marker or a Dutch day-part."""
+    if ampm:
+        pm = ampm.strip().lower().startswith("p")
+        if pm and hour < 12:
+            return hour + 12
+        if not pm and hour == 12:
+            return 0
+        return hour
+    if daypart:
+        part = daypart.split()[-1]
+        if part == "nachts":
+            return 0 if hour == 12 else hour
+        if part == "ochtends":
+            return hour
+        # middags (12:00-17:59) and avonds (18:00-23:59)
+        return hour if hour == 12 else hour + 12
+    return hour
+
+
 class Datapoint(TypedDict):
     date: str
     name: str
@@ -146,8 +178,9 @@ def create_data_point_from_chat(chat: str, regex) -> Datapoint:
         return Datapoint(date="", name="", chat_message="")
 
     # Construct date
+    hour = to_24h(int(result.get("hour") or 0), result.get("ampm"), result.get("daypart"))
     date = convert_to_iso8601(
-        f"{result.get('year', '')}-{result.get('month', '')}-{result.get('day', '')} {result.get('hour', '')}:{result.get('minutes', '')}"
+        f"{result.get('year', '')}-{result.get('month', '')}-{result.get('day', '')} {hour}:{result.get('minutes', '')}"
     )
     name = result.get("name", "")
     chat_message = result.get("chat_message", "")
@@ -239,11 +272,15 @@ def construct_message(current_line: str, next_line: str, regex: str) -> Tuple[bo
         return False, current_line
 
 
-def read_chat_file(path_to_chat_file: str) -> list[str]:
+def read_chat_file(chat_file: SeekableBinaryReader) -> list[str]:
+    """Read chat lines out of an uploaded WhatsApp export.
 
+    `chat_file` is the upload adapter itself — a seekable binary reader,
+    never a path (ADR-0026).
+    """
     out = []
-    if zipfile.is_zipfile(path_to_chat_file):
-      with zipfile.ZipFile(path_to_chat_file) as z:
+    if zipfile.is_zipfile(chat_file):
+      with zipfile.ZipFile(chat_file) as z:
         file_list = z.namelist()
         print(f"{file_list}")
         with z.open(file_list[0]) as f:
@@ -251,16 +288,19 @@ def read_chat_file(path_to_chat_file: str) -> list[str]:
             lines = [line.decode("utf-8") for line in lines]
 
     else:
-        with open(path_to_chat_file, encoding="utf-8") as f:
-            lines = f.readlines()
+        # Bare .txt chat exports are not supported through the upload
+        # pipeline: the file prompt accepts application/zip, and per ADR-0026
+        # the payload arrives as a reader, so there is no path to open().
+        # parse_chat() catches this and returns an empty DataFrame, which is
+        # the participant-visible outcome this branch already produced.
+        raise ValueError("WhatsApp chat upload is not a zip archive")
 
     out = [remove_unwanted_characters(line) for line in lines]
-    out.pop(0) # remove first element containing system message
 
     return out
 
 
-def parse_chat(path_to_chat: str) -> pd.DataFrame:
+def parse_chat(chat_file: SeekableBinaryReader) -> pd.DataFrame:
     """
     Read chat from file, parse, return df
 
@@ -269,9 +309,8 @@ def parse_chat(path_to_chat: str) -> pd.DataFrame:
     out = []
 
     try:
-        lines = read_chat_file(path_to_chat)
+        lines = read_chat_file(chat_file)
         regex = determine_regex_from_chat(lines)
-        lines.pop(0) # pop first line
 
         current_line = lines.pop(0)
         next_line = lines.pop(0)
@@ -300,8 +339,7 @@ def parse_chat(path_to_chat: str) -> pd.DataFrame:
     except Exception as e:
         logger.error(e)
 
-    finally:
-        return pd.DataFrame(out)
+    return pd.DataFrame(out)
 
 
 def find_emojis(df):
@@ -370,10 +408,6 @@ def total_number_of_words(df: pd.DataFrame, name: str) -> int:
     return total_number_of_words
 
 
-def redact_non_whitespace(text: str) -> str:
-    return ''.join('*' if not ch.isspace() else ch for ch in text)
-
-
 def favorite_emoji(df: pd.DataFrame, name: str) -> str:
     messages = df[df["name"] == name]["chat_message"]
     emojis = []
@@ -389,213 +423,262 @@ def favorite_emoji(df: pd.DataFrame, name: str) -> str:
     return most_common_emoji
 
 
-def user_statistics_to_df(df, user):
-    statistics = [
-        ("who reacted to you the most", who_reacted_to_you_the_most(df, user)),
-        ("who you reacted to the most", who_you_reacted_to_the_most(df, user)),
-        ("total number of messages you send", total_number_of_messages(df, user)),
-        ("total number of words you send", total_number_of_words(df, user)),
-        ("The emoji you used most", favorite_emoji(df, user)),
-    ]
-    return pd.DataFrame(statistics, columns=["Description", "Statistic"]) # pyright: ignore
+def chat_messages_to_df(df: pd.DataFrame, errors: Counter) -> pd.DataFrame:
+    """Return the full group chat as a DataFrame.
 
+    Parameters
+    ----------
+    df:
+        Pre-parsed chat DataFrame with columns ``date``, ``name``,
+        ``chat_message``.
+    errors:
+        Mutable counter for error accumulation.  Unused here but required by
+        the extractor protocol.
 
-def extraction(df: pd.DataFrame) -> list[d3i_props.PropsUIPromptConsentFormTableViz]:
-    df["chat_message"] = df["chat_message"].apply(redact_non_whitespace)
-    tables = [
-        d3i_props.PropsUIPromptConsentFormTableViz(
-            id="whatsapp_grou_chat",
-            data_frame=df.rename(columns={"date": "Timestamp", "name": "Name", "chat_message": "Message"}),
-            title=props.Translatable({
-                "en": "Your group chat", 
-                "nl": "Your group chat"
-            }),
-            description=props.Translatable({
-                "en": "The contents of your group chat. Try searching for stuff in your group chat, the figures should change accordingly! Timestamps (and therefore some tables) can be incorrect as it assumes the European format.",
-                "nl": "The contents of your group chat. Try searching for stuff in your group chat, the figures should change accordingly! Timestamps (and therefore some tables) can be incorrect as it assumes the European format."
-            }),
-            visualizations=[
-                {
-                    "title": {
-                        "en": "Total chats per hour of the day",
-                        "nl": "Total chats per hour of the day"
-                    },
-                    "type": "bar",
-                    "group": {
-                        "column": "Timestamp",
-                        "dateFormat": "hour_cycle"
-                    },
-                    "values": [{}]
-                }
-            ]
-        ),
-        
-        d3i_props.PropsUIPromptConsentFormTableViz(
-            id="emoji_usage",
-            data_frame=find_emojis(df),
-            title=props.Translatable({
-                "en": "The 100 most used emojis in the group",
-                "nl": "De 100 meest gebbruikte emojis in the groep"
-            }),
-            description=props.Translatable({
-                "en": "Analysis of emoji frequency used by all members in the chat",
-                "nl": "Analyse van emoji-frequentie gebruikt door alle leden in de chat"
-            })
-        )
-    ]
-    
-    users = extract_users(df)
-    for i, user in enumerate(users):
-        tables.append(
-            d3i_props.PropsUIPromptConsentFormTableViz(
-                id=f"user_statistics_{i}",
-                data_frame=user_statistics_to_df(df, user),
-                title=props.Translatable({
-                    "en": f"Chat statistics for user: {user}",
-                    "nl": f"Chat statistics for user: {user}"
-                }),
-                description=props.Translatable({
-                    "en": f"Detailed messaging patterns and activity metrics for {user}",
-                    "nl": f"Gedetailleerde berichtpatronen en activiteitsgegevens voor {user}"
-                })
-            )
-        )
-    
-    return [table for table in tables if not table.data_frame.empty]
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ``Timestamp``, ``Name``, ``Message``.
 
+    Note: ``Timestamp`` is not the export's own text — ``convert_to_iso8601`` rewrites
+    the chat line's date/time into this extractor's own ISO string before this function
+    ever sees it. That is a known violation of the raw-value rule (ADR-0042), to be
+    removed; in the meantime the consent page interprets the value (ADR-0043).
 
+    Table documentation::
 
-#                df = whatsapp.remove_empty_chats(df)
-#                users = whatsapp.extract_users(df)
-#                df = whatsapp.keep_users(df, users)
-#
-#                if len(users) < 3:
-#                    retry_result = yield render_page(RETRY_HEADER_WHATSAPP, retry_confirmation(platform_name))
-#                    if retry_result.__type__ == "PayloadTrue":
-#                        continue
-#                    else:
-#                        break
-#
-#                if selected_username == "":
-#                    selection = yield prompt_radio_menu(platform_name, users)
-#                    # If user skips during this process, selectedUsername remains equal to ""
-#                    if selection.__type__ == "PayloadString":
-#                        selected_username = selection.value
-#                    else:
-#                        break
-#                    
-#                    df = whatsapp.anonymize_users(df, users, selected_username)
-#                    anonymized_users_list = [ f"Member {i + 1}" for i in range(len(users))]
-#                    for user_name in anonymized_users_list:
-#                        statistics_table = whatsapp.deelnemer_statistics_to_df(df, user_name)
-#                        if statistics_table != None:
-#                            list_with_consent_form_tables.append(statistics_table)
-#
-#                    break
-#
+        {
+          "summary": "Each row represents one message in the WhatsApp group chat, including the sender name, message text, and timestamp.",
+          "source_file": "WhatsApp chat export (.txt or .zip)",
+          "columns": {
+            "Timestamp": "Time the message was sent, on the phone's clock (ISO 8601, no time zone).",
+            "Name": "Display name of the message sender.",
+            "Message": "Text content of the message."
+          }
+        }
 
+    Table config::
 
-def deelnemer_statistics_to_df(df: pd.DataFrame, user_name: str) -> None | d3i_props.PropsUIPromptConsentFormTableViz:
-    out = None
-
-    try: 
-        df["op_mij"] = df["name"].shift(-1)
-        df["jij_op_wie"] = df["name"].shift(1)
-        df["n_words"] = df["chat_message"].apply(lambda x: len(x.split()))
-
-        # take into account self replies
-        def ignore_self_reply(a, b):
-            if a == b:
-                return None
-            else:
-                return b
-
-        df["op_mij"] = df[["name", "op_mij"]].apply(lambda x: ignore_self_reply(*x), axis=1)
-        df["jij_op_wie"] = df[["name", "jij_op_wie"]].apply(lambda x: ignore_self_reply(*x), axis=1)
-
-        df = df.drop(df[df.name != user_name].index) # pyright: ignore
-        df = df.reset_index(drop=True)
-
-        group_df = df.groupby("name").agg(
+        {
+          "id": "whatsapp_group_chat",
+          "title": {
+            "en": "Your group chat",
+            "nl": "Je groepsgesprek"
+          },
+          "description": {
+            "en": "The contents of your group chat. Timestamps (and therefore some tables) can be incorrect as it assumes the European format.",
+            "nl": "De inhoud van je groepsgesprek. Tijdstempels (en dus sommige tabellen) kunnen onjuist zijn omdat het Europese formaat wordt aangenomen."
+          },
+          "headers": {
+            "Timestamp": {"en": "Timestamp", "nl": "Tijdstempel"},
+            "Name": {"en": "Name", "nl": "Naam"},
+            "Message": {"en": "Message", "nl": "Bericht"}
+          },
+          "date_columns": {"Timestamp": {"encoding": "iso-8601"}},
+          "visualizations": [
             {
-                "date": ["count", "min", "max"],
-                "op_mij": [ lambda x: x.value_counts().idxmax() ],
-                "jij_op_wie": [ lambda x: x.value_counts().idxmax() ],
-                "n_words": ["sum"]
+              "title": {"en": "Most common words in your chats", "nl": "Meest gebruikte woorden in je gesprekken"},
+              "type": "wordcloud",
+              "textColumn": "Message",
+              "tokenize": true
+            },
+            {
+              "title": {"en": "Total chats per month of the year", "nl": "Totaal chats per maand"},
+              "type": "area",
+              "group": {"column": "Timestamp", "dateFormat": "month"},
+              "values": [{}]
+            },
+            {
+              "title": {"en": "Total chats per hour of the day", "nl": "Totaal chats per uur van de dag"},
+              "type": "bar",
+              "group": {"column": "Timestamp", "dateFormat": "hour_cycle"},
+              "values": [{}]
             }
-        ).reset_index(drop=True)
-
-        group_df.columns = [
-            "Number of messages", 
-            "Date of first message",
-            "Date of last message",
-            "Who responds to you the most?",
-            "Who do you respond to the most?",
-            "Number of words"
-        ]
-
-        group_df = group_df[[
-            "Number of words",
-            "Number of messages", 
-            "Date of first message",
-            "Date of last message",
-            "Who responds to you the most?",
-            "Who do you respond to the most?"
-        ]]
-
-        df_out = pd.melt(
-            group_df, # pyright: ignore
-            var_name="Description",
-            value_name="Value"
-        )
-
-        if user_name == "Member 1":
-            title = "This is you (Member 1)"
-            table_title = props.Translatable({ "en": title, "nl": title })
-            description = props.Translatable({ 
-                "en": """In this table you’ll see anonymized data of each member in the Whatsapp group chat, including the total number of messages you’ve sent, the dates of your first and last messages, who responds to you the most, who you respond to the most, and the total number of words you’ve used.""",    
-                "nl": """In deze tabel zie je geanonimiseerde gegevens van elk lid in de Whatsapp-groepschat, waaronder het totale aantal berichten dat je hebt verstuurd, de data van je eerste en laatste bericht, wie het meest op jou reageert, op wie jij het meest reageert, en het totale aantal woorden dat je hebt gebruikt."""
-            })
-            out = d3i_props.PropsUIPromptConsentFormTableViz(f"table_id_{user_name.replace(' ', '_')}", table_title, df_out, description)
-        else:
-            title = user_name
-            table_title = props.Translatable({ "en": title, "nl": title })
-            out = d3i_props.PropsUIPromptConsentFormTableViz(f"table_id_{user_name.replace(' ', '_')}", table_title, df_out)
-
-        return out
-
-    except Exception as e:
-        logger.error(e)
-
-    finally:
-        return out
-
-
-
-
-def anonymize_users(df: pd.DataFrame, list_with_users: list[str], user_name: str) -> pd.DataFrame:
+          ]
+        }
     """
-    Extracts unique usersnames from chat dataframe
+    return df.rename(columns={"date": "Timestamp", "name": "Name", "chat_message": "Message"})
+
+
+def emoji_usage_to_df(df: pd.DataFrame, errors: Counter) -> pd.DataFrame:
+    """Return the 100 most used emojis across all chat members.
+
+    Parameters
+    ----------
+    df:
+        Pre-parsed chat DataFrame with a ``chat_message`` column.
+    errors:
+        Mutable counter for error accumulation.  Unused here but required by
+        the extractor protocol.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ``Emoji``, ``Count``.
+
+    Table documentation::
+
+        {
+          "summary": "Each row represents one emoji used in the group chat, ranked by frequency across all members.",
+          "source_file": "WhatsApp chat export (.txt or .zip)",
+          "columns": {
+            "Emoji": "The emoji character.",
+            "Count": "Total number of times this emoji was used."
+          }
+        }
+
+    Table config::
+
+        {
+          "id": "whatsapp_emoji_usage",
+          "title": {
+            "en": "The 100 most used emojis in the group",
+            "nl": "De 100 meest gebruikte emojis in de groep"
+          },
+          "description": {
+            "en": "Analysis of emoji frequency used by all members in the chat.",
+            "nl": "Analyse van emoji-frequentie gebruikt door alle leden in de chat."
+          },
+          "headers": {
+            "Emoji": {"en": "Emoji", "nl": "Emoji"},
+            "Count": {"en": "Count", "nl": "Aantal"}
+          }
+        }
     """
+    return find_emojis(df)
 
-    users_not_you = list(set(list_with_users) - set([user_name]))
-    mapping = {user_name : f"Member {i+2}" for i, user_name in enumerate(users_not_you)}
-    mapping[user_name] = "Member 1"
 
-    df['name'] = df['name'].replace(mapping)
-    return df
+def user_statistics_to_df(df: pd.DataFrame, errors: Counter) -> pd.DataFrame:
+    """Return messaging statistics for every detected user in the chat.
 
+    Parameters
+    ----------
+    df:
+        Pre-parsed chat DataFrame with columns ``date``, ``name``,
+        ``chat_message``.
+    errors:
+        Mutable counter for error accumulation.  Unused here but required by
+        the extractor protocol.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ``User``, ``Description``, ``Statistic``.
+        One row per (user, metric) combination.
+
+    Table documentation::
+
+        {
+          "summary": "Each row represents a messaging statistic for one detected chat participant, including who they interact with most and their emoji usage.",
+          "source_file": "WhatsApp chat export (.txt or .zip)",
+          "columns": {
+            "User": "Display name of the chat participant.",
+            "Description": "Name of the statistic.",
+            "Statistic": "Value of the statistic."
+          }
+        }
+
+    Table config::
+
+        {
+          "id": "whatsapp_user_statistics",
+          "title": {
+            "en": "Chat statistics per user",
+            "nl": "Chatstatistieken per gebruiker"
+          },
+          "description": {
+            "en": "Detailed messaging patterns and activity metrics for each participant in the group chat.",
+            "nl": "Gedetailleerde berichtpatronen en activiteitsgegevens voor elke deelnemer in het groepsgesprek."
+          },
+          "headers": {
+            "User": {"en": "User", "nl": "Gebruiker"},
+            "Description": {"en": "Description", "nl": "Beschrijving"},
+            "Statistic": {"en": "Statistic", "nl": "Statistiek"}
+          }
+        }
+    """
+    users = extract_users(df)
+    rows = []
+    for user in users:
+        rows.extend([
+            (user, "who reacted to you the most", who_reacted_to_you_the_most(df, user)),
+            (user, "who you reacted to the most", who_you_reacted_to_the_most(df, user)),
+            (user, "total number of messages you send", total_number_of_messages(df, user)),
+            (user, "total number of words you send", total_number_of_words(df, user)),
+            (user, "the emoji you used most", favorite_emoji(df, user)),
+        ])
+    return pd.DataFrame(rows, columns=["User", "Description", "Statistic"])  # pyright: ignore
+
+
+# ---------------------------------------------------------------------------
+# Extractor registry & platform info
+# ---------------------------------------------------------------------------
+
+#: Mapping from the string names used in port_config.json to actual extractor functions.
+#: WhatsApp extractors take ``(df: pd.DataFrame, errors: Counter)`` instead of
+#: ``(reader: ZipArchiveReader, errors: Counter)`` because the chat file is
+#: pre-parsed into a DataFrame before extraction runs.
+EXTRACTOR_REGISTRY: dict[str, Callable[..., pd.DataFrame]] = {
+    "chat_messages_to_df": chat_messages_to_df,
+    "emoji_usage_to_df": emoji_usage_to_df,
+    "user_statistics_to_df": user_statistics_to_df,
+}
+
+
+# ---------------------------------------------------------------------------
+# Main extraction & flow
+# ---------------------------------------------------------------------------
+
+def extraction(df: pd.DataFrame) -> ExtractionResult:
+    """Extract tables from a pre-parsed WhatsApp chat DataFrame.
+
+    WhatsApp DDPs are plain-text exports rather than structured archives, so
+    extraction pre-parses the chat into *df* before calling individual
+    extractors.  Extractors therefore receive ``(df, errors)`` instead of the
+    usual ``(reader, errors)``.
+
+    Parameters
+    ----------
+    df:
+        Pre-parsed, filtered chat DataFrame with columns ``date``, ``name``,
+        ``chat_message``.
+    """
+    from port.helpers.table_extractor import load_port_config
+    from port.api.d3i_props import PropsUIPromptConsentFormTableViz
+
+    config = load_port_config(EXTRACTOR_REGISTRY, "whatsapp")
+    errors: Counter = Counter()
+    tables = []
+    for table_cfg in config:
+        result_df = table_cfg.extractor(df, errors, **table_cfg.extractor_kwargs)
+        if table_cfg.variables is not None:
+            result_df = result_df[[c for c in table_cfg.variables if c in result_df.columns]]
+        tables.append(PropsUIPromptConsentFormTableViz(
+            id=table_cfg.id,
+            data_frame=result_df,
+            title=table_cfg.title,
+            description=table_cfg.description,
+            headers=table_cfg.headers,
+            visualizations=table_cfg.visualizations if table_cfg.visualizations else None,
+            date_columns=table_cfg.date_columns or None,
+        ))
+    return ExtractionResult(
+        tables=[t for t in tables if not t.data_frame.empty],
+        errors=errors,
+    )
 
 
 class WhatsAppFlow(FlowBuilder):
-    def __init__(self, session_id: int):
-        super().__init__(session_id, "WhatsApp Group Chat")
+    def __init__(self, session_id: str):
+        # ``config_key="whatsapp"`` matches configs/whatsapp_config.json, the file
+        # load_public_key_pem/load_reference_timezone actually look up. The display
+        # name stays "WhatsApp Group Chat": it also feeds the ADR-0020 donation key
+        # (f"{session_id}-{platform_name.lower()}"), which must not change here.
+        super().__init__(session_id, "WhatsApp Group Chat", config_key="whatsapp")
         
     def validate_file(self, file):
         df = parse_chat(file)
-        df = remove_empty_chats(df)
-        users = extract_users(df)
-        if not df.empty and len(users) > 3:
+        if not df.empty:
             return validate.BaseValidation(status_code=0)
         else:
             return validate.BaseValidation(status_code=1)
@@ -605,18 +688,6 @@ class WhatsAppFlow(FlowBuilder):
         df = remove_empty_chats(df)
         users = extract_users(df)
         df = keep_users(df, users)
-
-        title = props.Translatable({
-            "en": "Select your WhatsApp name",
-            "nl": "Kies jouw WhatsApp naam"
-        })
-
-        empty_text = props.Translatable({ "en": "", "nl": "" })
-        radio_prompt = ph.generate_radio_prompt(title, empty_text, users)
-        selection = yield ph.render_page(empty_text, radio_prompt)
-        selected_user = selection.value
-        df = anonymize_users(df, users, selected_user)
-
         return extraction(df)
 
 
