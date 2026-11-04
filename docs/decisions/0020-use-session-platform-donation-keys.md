@@ -18,7 +18,7 @@ companions:
 
 ## Decision
 
-`FlowBuilder.start_flow()` donates with key `f"{session_id}-{platform_key}"`, where the platform segment is a key-safe machine identifier (currently derived as `platform_name.lower()`, so the name each platform passes to `FlowBuilder.__init__` becomes part of the data contract).
+`FlowBuilder.start_flow()` donates with key `f"{session_id}-{platform_key}"`, where the platform segment is a key-safe machine identifier (derived as `platform_name.lower()` unless the platform passes an explicit `donation_key`, so the name each platform passes to `FlowBuilder.__init__` becomes part of the data contract).
 
 ## Guidance
 

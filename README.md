@@ -23,6 +23,13 @@ Build the deployable zips (one per platform config in `packages/python/port/conf
 pnpm release
 ```
 
+Or build only one UU platform:
+
+```sh
+VITE_PLATFORM=whatsapp_account_info pnpm release
+VITE_PLATFORM=whatsapp_group_chat_uu pnpm release
+```
+
 ---
 
 # The data donation task
