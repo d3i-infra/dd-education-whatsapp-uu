@@ -97,12 +97,12 @@ def chat_messages_to_df(df: pd.DataFrame, errors: Counter) -> pd.DataFrame:
           "id": "whatsapp_uu_group_chat",
           "title": {"en": "Your group chat", "nl": "Je groepsgesprek"},
           "description": {
-            "en": "The contents of your group chat, with names anonymised and message text hidden. Try searching in your group chat, the figures should change accordingly! Timestamps (and therefore some figures) can be incorrect as the European date format is assumed.",
-            "nl": "De inhoud van je groepsgesprek, met geanonimiseerde namen en verborgen berichttekst. Probeer te zoeken in je groepsgesprek, de figuren veranderen dan mee! Tijdstempels (en dus sommige figuren) kunnen onjuist zijn omdat het Europese datumformaat wordt aangenomen."
+            "en": "The messages in your group chat, with names replaced by Member 1 (you), Member 2, and so on, and every character of the message text replaced by *. You can search the table for a member or a date; the chart shows how many messages were sent per hour of the day. Dates are read day-first, so if your phone shows dates month-first (as in the US), some dates and the chart may be off.",
+            "nl": "De berichten in je groepsgesprek, met namen vervangen door Member 1 (jij), Member 2, enzovoort, en elk teken van de berichttekst vervangen door *. Je kunt in de tabel zoeken op een lid of een datum; de grafiek toont hoeveel berichten er per uur van de dag zijn verstuurd. Datums worden gelezen met de dag eerst, dus als je telefoon de maand eerst toont (zoals in de VS), kunnen sommige datums en de grafiek afwijken."
           },
           "headers": {
             "Timestamp": {"en": "Timestamp", "nl": "Tijdstempel"},
-            "Name": {"en": "Name", "nl": "Naam"},
+            "Name": {"en": "Member", "nl": "Lid"},
             "Message": {"en": "Message", "nl": "Bericht"}
           },
           "date_columns": {"Timestamp": {"encoding": "iso-8601"}},
@@ -174,8 +174,8 @@ def member_statistics_to_df(df: pd.DataFrame, errors: Counter) -> pd.DataFrame:
           "id": "whatsapp_uu_member_statistics",
           "title": {"en": "Chat statistics per member (you are Member 1)", "nl": "Chatstatistieken per lid (jij bent Member 1)"},
           "description": {
-            "en": "For each anonymised member of the group chat: who reacts to them the most, who they react to the most, the number of messages and words they sent, and their most used emoji.",
-            "nl": "Voor elk geanonimiseerd lid van de groepschat: wie het meest op hen reageert, op wie zij het meest reageren, het aantal verstuurde berichten en woorden, en hun meest gebruikte emoji."
+            "en": "For each anonymised member of the group chat (you are Member 1): who reacted to them the most, who they reacted to the most, the number of messages and words they sent, and their most used emoji. A reaction is counted when someone else sends the next message.",
+            "nl": "Voor elk geanonimiseerd lid van de groepschat (jij bent Member 1): wie het meest op hen reageerde, op wie zij het meest reageerden, het aantal verstuurde berichten en woorden, en hun meest gebruikte emoji. Een reactie telt wanneer iemand anders het volgende bericht stuurt."
           },
           "headers": {
             "Member": {"en": "Member", "nl": "Lid"},
@@ -187,11 +187,11 @@ def member_statistics_to_df(df: pd.DataFrame, errors: Counter) -> pd.DataFrame:
     rows: list[tuple[str, str, object]] = []
     for member in members_in_order(df):
         rows.extend([
-            (member, "who reacted to you the most", wa.who_reacted_to_you_the_most(df, member)),
-            (member, "who you reacted to the most", wa.who_you_reacted_to_the_most(df, member)),
-            (member, "total number of messages you send", wa.total_number_of_messages(df, member)),
-            (member, "total number of words you send", wa.total_number_of_words(df, member)),
-            (member, "the emoji you used most", wa.favorite_emoji(df, member)),
+            (member, "who reacted to this member the most", wa.who_reacted_to_you_the_most(df, member)),
+            (member, "who this member reacted to the most", wa.who_you_reacted_to_the_most(df, member)),
+            (member, "number of messages sent", wa.total_number_of_messages(df, member)),
+            (member, "number of words sent", wa.total_number_of_words(df, member)),
+            (member, "most used emoji", wa.favorite_emoji(df, member)),
         ])
     return pd.DataFrame(rows, columns=["Member", "Description", "Statistic"])
 

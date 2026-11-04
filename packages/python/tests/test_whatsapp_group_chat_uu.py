@@ -100,10 +100,10 @@ class TestExtractors:
         assert list(dict.fromkeys(out["Member"])) == ["Member 1", "Member 2", "Member 3"]
         m1_rows = out[out["Member"] == "Member 1"]
         m1 = dict(zip(m1_rows["Description"], m1_rows["Statistic"]))
-        assert m1["total number of messages you send"] == 2
-        assert m1["total number of words you send"] == 4
-        assert m1["the emoji you used most"] == "😀"
-        assert m1["who reacted to you the most"] == "Member 2"
+        assert m1["number of messages sent"] == 2
+        assert m1["number of words sent"] == 4
+        assert m1["most used emoji"] == "😀"
+        assert m1["who reacted to this member the most"] == "Member 2"
 
 
 def test_extraction_produces_three_config_driven_tables(monkeypatch):
