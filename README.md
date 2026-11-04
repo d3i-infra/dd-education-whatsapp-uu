@@ -1,3 +1,30 @@
+# WhatsApp data donation — Utrecht University course
+
+This Feldspar application is used each year in a Sociology course at Utrecht University on novel data collection methods. It contains a WhatsApp data donation study for account information and for group chat information. Only non-personal data are collected in this application.
+
+> **Adapted to 2026:** this repository was brought up to date in November 2026 with the latest `development` branch of [d3i-infra/data-donation-task](https://github.com/d3i-infra/data-donation-task). The course flows now live as two separate platforms that follow that repository's architecture decisions (`docs/decisions/`).
+
+## The two UU platforms
+
+| Platform (`VITE_PLATFORM`) | Upload | Donates |
+|---|---|---|
+| `whatsapp_account_info` | WhatsApp "Request account info" zip | number of contacts, number of groups, device platform (iphone/android) |
+| `whatsapp_group_chat_uu` | WhatsApp group-chat export (zip) | anonymised chat (Member 1 = you) with redacted message text, emoji counts, per-member statistics; requires more than three members |
+
+Run one locally:
+
+```sh
+VITE_PLATFORM=whatsapp_group_chat_uu pnpm start
+```
+
+Build the deployable zips (one per platform config in `packages/python/port/configs/`; this includes upstream's `example` config alongside the two UU configs):
+
+```sh
+pnpm release
+```
+
+---
+
 # The data donation task
 
 The data donation task (a fork of [Feldspar](https://github.com/eyra/feldspar)) is a front end that guides participants through the data donation steps, used in conjunction with Next.
