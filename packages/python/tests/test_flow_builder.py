@@ -653,3 +653,37 @@ class TestDisplayTimezone:
         flow = StubFlow()
         flow.generate_review_data_prompt(flow._tables)
         assert all(t.display_timezone is None for t in flow._tables)
+
+
+class KeyedStubFlow(StubFlow):
+    """StubFlow with an explicit donation key."""
+
+    def __init__(self, session_id="test-session", donation_key=None):
+        with patch("port.helpers.flow_builder.load_public_key_pem", return_value=None):
+            FlowBuilder.__init__(self, session_id, "Test Platform Name", donation_key=donation_key)
+        self._validation_status = 0
+        self._tables = StubFlow()._tables
+
+
+class TestDonationKeyOverride:
+    def test_default_key_is_lowercased_platform_name(self):
+        flow = StubFlow()
+        assert flow.donation_key == "testplatform"
+
+    def test_explicit_donation_key_is_used_in_donate_command(self):
+        flow = KeyedStubFlow(session_id="sess-42", donation_key="my_platform")
+        gen = flow.start_flow()
+        start_and_skip_logs(gen)
+        advance_past_logs(gen, make_payload_file())
+        cmd = advance_past_logs(gen, make_payload("PayloadJSON", value="{}"))
+        assert isinstance(cmd, CommandSystemDonate)
+        assert cmd.key == "sess-42-my_platform"
+
+    def test_explicit_key_does_not_change_display_name(self):
+        flow = KeyedStubFlow(donation_key="my_platform")
+        assert flow.platform_name == "Test Platform Name"
+
+    @pytest.mark.parametrize("bad", ["My_Platform", "my platform", "my-platform", "", "abc\n"])
+    def test_invalid_donation_key_raises(self, bad):
+        with pytest.raises(ValueError):
+            KeyedStubFlow(donation_key=bad)

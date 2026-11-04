@@ -8,6 +8,7 @@ from abc import abstractmethod
 from collections.abc import Generator
 import json
 import logging
+import re
 from typing import cast
 import zipfile
 
@@ -22,6 +23,9 @@ from port.helpers.donation_crypto import encrypt_payload
 from port.helpers.table_extractor import load_public_key_pem, load_reference_timezone
 
 logger = logging.getLogger(__name__)
+
+#: ADR-0020: the donation-key platform segment is a machine key.
+_DONATION_KEY_RE = re.compile(r"^[a-z0-9_]+$")
 
 
 class TaskIncompleteError(Exception):
@@ -55,7 +59,13 @@ class FlowBuilder:
     # construction below key off this attribute. See ADR-0040 (ArchiveSet).
     expected_file_payload: str = "PayloadFile"
 
-    def __init__(self, session_id: str, platform_name: str, config_key: str | None = None):
+    def __init__(
+        self,
+        session_id: str,
+        platform_name: str,
+        config_key: str | None = None,
+        donation_key: str | None = None,
+    ):
         """
         Parameters
         ----------
@@ -72,9 +82,19 @@ class FlowBuilder:
             display name is "WhatsApp Group Chat", but its config file is
             ``whatsapp_config.json``) — this must never be derived from or fed
             back into the donation key.
+        donation_key:
+            Optional explicit donation-key segment (ADR-0020). Defaults to
+            ``platform_name.lower()``. Must match ``^[a-z0-9_]+$``; pass it
+            when the display name contains spaces or capitals.
         """
         self.session_id = session_id
         self.platform_name = platform_name
+        if donation_key is None:
+            self.donation_key = platform_name.lower()
+        elif _DONATION_KEY_RE.fullmatch(donation_key):
+            self.donation_key = donation_key
+        else:
+            raise ValueError(f"Invalid donation_key {donation_key!r}: must match ^[a-z0-9_]+$")
         lookup_key = config_key if config_key is not None else platform_name
         self.public_key_pem: str | None = load_public_key_pem(lookup_key)
         self.display_timezone: str | None = load_reference_timezone(lookup_key)
@@ -286,7 +306,7 @@ class FlowBuilder:
         else:
             return
 
-        donate_key = f"{self.session_id}-{self.platform_name.lower()}"
+        donate_key = f"{self.session_id}-{self.donation_key}"
         is_decline = consent_result.__type__ == "PayloadFalse"
 
         if self.public_key_pem and not is_decline:

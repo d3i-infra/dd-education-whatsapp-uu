@@ -26,6 +26,7 @@ companions:
 - Treat `{session_id}-{platform_key}` as a downstream data contract; coordinate parser and storage changes before changing the format.
 - The platform segment is a machine key, never UI display text: lowercase, no spaces, no hyphens. Session ids may themselves contain hyphens, so parsers take the platform from the substring after the *final* hyphen — a platform key containing a separator breaks every downstream parser.
 - The consent-gated error report (`error_flow` in `main.py`) donates under its own fixed `error-report` key; it is not an extraction donation and stays outside this scheme.
+- A platform whose display name is not itself a valid key (spaces, capitals) passes `donation_key=` to `FlowBuilder.__init__`; the explicit key must match `^[a-z0-9_]+$` (`ValueError` otherwise) and replaces `platform_name.lower()` in the donation key only — the display name and `config_key` are unaffected.
 
 ## Why
 
