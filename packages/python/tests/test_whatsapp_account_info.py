@@ -105,3 +105,37 @@ class TestAccountSummary:
 
 def test_registry_lists_the_extractor():
     assert wai.EXTRACTOR_REGISTRY == {"account_summary_to_df": wai.account_summary_to_df}
+
+
+def make_flow():
+    with patch("port.helpers.flow_builder.load_public_key_pem", return_value=None), \
+         patch("port.helpers.flow_builder.load_reference_timezone", return_value=None):
+        return wai.WhatsAppAccountInfoFlow("sess")
+
+
+class TestFlow:
+    def test_names_and_keys(self):
+        flow = make_flow()
+        assert flow.platform_name == "WhatsApp account information"
+        assert flow.donation_key == "whatsapp_account_info"
+
+    def test_validate_accepts_account_export(self):
+        files = dict(FULL_EXPORT)
+        files["whatsapp_account_info/index.html"] = "<html></html>"
+        v = make_flow().validate_file(make_zip(files))
+        assert v.get_status_code_id() == 0
+
+    def test_validate_rejects_unrelated_zip(self):
+        v = make_flow().validate_file(make_zip({"foo/bar.csv": "a,b"}))
+        assert v.get_status_code_id() != 0
+
+
+def test_extraction_builds_config_driven_table(monkeypatch):
+    config = te._build_config(build_config("whatsapp_account_info"), wai.EXTRACTOR_REGISTRY)
+    monkeypatch.setattr(wai, "load_port_config", lambda registry, platform: config)
+    buf = make_zip(FULL_EXPORT)
+    v = make_flow().validate_file(buf)
+    buf.seek(0)
+    result = wai.extraction(buf, v)
+    assert [t.id for t in result.tables] == ["whatsapp_account_info"]
+    assert len(result.tables[0].data_frame) == 3
